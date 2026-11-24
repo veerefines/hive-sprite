@@ -110,3 +110,15 @@ test('find_places uses Photon first and drops far-away or duplicate results', as
   assert.deepEqual(got.map((p) => p.name), ['Miradouro A'])
   assert.equal(overpassCalled, false)
 })
+
+test('find_places without a keyword lists nearby places by tag (Photon reverse)', async () => {
+  const { findPlaces } = await import('../src/world.ts')
+  let url = ''
+  const f = (async (u: string) => {
+    url = String(u)
+    return new Response(JSON.stringify({ features: [{ geometry: { coordinates: [-9.14, 38.71] }, properties: { name: 'Miradouro B' } }] }))
+  }) as typeof fetch
+  const got = await findPlaces(38.708, -9.137, 'viewpoint', 2500, f)
+  assert.match(url, /photon\.komoot\.io\/reverse\?.*osm_tag=tourism:viewpoint/)
+  assert.deepEqual(got.map((p) => p.name), ['Miradouro B'])
+})

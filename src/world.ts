@@ -53,11 +53,16 @@ async function withTimeout(p: (signal: AbortSignal) => Promise<Response>, ms: nu
   }
 }
 
-/** Photon (komoot's OpenStreetMap search): fast, location-biased, filtered by OSM tag. */
+/**
+ * Photon (komoot's OpenStreetMap search). With a keyword it does a
+ * location-biased text search; without one it lists the nearest places with
+ * the OSM tag (reverse mode), which needs no search word at all.
+ */
 async function photon(lat: number, lng: number, kind: string, keyword: string, radiusKm: number, f: typeof fetch): Promise<Place[]> {
-  const [tag, word] = KINDS[kind] ?? KINDS.attraction
-  const q = encodeURIComponent(keyword || word)
-  const url = `https://photon.komoot.io/api/?lat=${lat}&lon=${lng}&limit=25&osm_tag=${tag}&q=${q}`
+  const [tag] = KINDS[kind] ?? KINDS.attraction
+  const url = keyword
+    ? `https://photon.komoot.io/api/?lat=${lat}&lon=${lng}&limit=25&osm_tag=${tag}&q=${encodeURIComponent(keyword)}`
+    : `https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}&limit=20&osm_tag=${tag}&radius=${Math.max(1, Math.round(radiusKm))}`
   const res = await withTimeout((signal) => f(url, { headers: { 'user-agent': UA }, signal }), 8000)
   if (!res?.ok) return []
   const data = (await res.json()) as {
@@ -113,7 +118,7 @@ export async function findPlaces(
 ): Promise<Place[]> {
   const r = Math.min(Math.max(radiusM, 500), 8000)
   let places = await photon(lat, lng, kind, keyword, (r / 1000) * 1.5, fetchImpl).catch(() => [])
-  if (!places.length && keyword) places = await photon(lat, lng, kind, '', (r / 1000) * 1.5, fetchImpl).catch(() => [])
+  if (!places.length && keyword) places = await photon(lat, lng, kind, '', (r / 1000) * 1.5, fetchImpl).catch(() => [])  // nearby, no keyword
   if (!places.length) places = await overpass(lat, lng, kind, r, fetchImpl).catch(() => [])
   const seen = new Set<string>()
   return places.filter((p) => !seen.has(p.name) && seen.add(p.name)).slice(0, 12)
