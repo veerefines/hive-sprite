@@ -12,7 +12,7 @@ const fakeFetch = (async (input: string | URL) => {
   const ok = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
   if (u.includes('nominatim')) return ok([{ display_name: 'Lisbon, Portugal', lat: '38.72', lon: '-9.14', type: 'city' }])
   if (u.includes('open-meteo'))
-    return ok({ daily: { time: ['2026-12-01'], temperature_2m_max: [17], temperature_2m_min: [10], precipitation_probability_max: [10], weather_code: [1] } })
+    return ok({ daily: { time: ['2026-12-01'], temperature_2m_max: [17], temperature_2m_min: [10], precipitation_probability_max: [10], weather_code: [1], sunset: ['2026-12-01T17:18'] } })
   if (u.includes('overpass')) return ok({ elements: [{ lat: 38.713, lon: -9.133, tags: { name: 'Miradouro' } }] })
   return new Response('nope', { status: 404 })
 }) as typeof fetch
@@ -55,7 +55,8 @@ test('Hive revises until the Plan Doctor reports no errors', async () => {
   assert.equal(trip.issues.filter((x) => x.severity === 'error').length, 0)
   assert.equal(trip.stops.length, 5)
   assert.equal(trip.summary, 'A relaxed day of views and seafood.')
-  assert.ok(trip.forecast['2026-12-01'])
+  assert.equal(trip.forecast['2026-12-01'].sunset, '17:18')
+  assert.match(seen[0][0].content!, /sunset 17:18/)
   assert.match(formatForSlack(trip), /Hive plan: Lisbon/)
 })
 

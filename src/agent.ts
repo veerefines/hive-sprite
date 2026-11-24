@@ -106,7 +106,7 @@ const TOOLS: ToolSpec[] = [
 function systemPrompt(r: TripRequest, weather: Record<string, DayWeather>): string {
   const wx = Object.entries(weather)
     .filter(([d]) => d >= r.startDate && d <= r.endDate)
-    .map(([d, w]) => `${d}: ${w.desc}, ${w.min}-${w.max}°C${w.rain ? ', likely rain' : ''}`)
+    .map(([d, w]) => `${d}: ${w.desc}, ${w.min}-${w.max}°C${w.rain ? ', likely rain' : ''}${w.sunset ? `, sunset ${w.sunset}` : ''}`)
     .join('\n')
   return [
     'You are Hive, a trip-planning agent running on a Fly.io Sprite.',
@@ -116,7 +116,8 @@ function systemPrompt(r: TripRequest, weather: Record<string, DayWeather>): stri
     'Research first: call find_places several times (food, sights, viewpoints, parks) before proposing anything.',
     'Rules: every stop title must be the real name of a place returned by find_places or geocode (e.g. "Lunch at Cervejaria Ramiro"), with its coordinates.',
     'Never use generic titles like "breakfast" or "walk around", and never repeat a place across the trip.',
-    'Include breakfast/lunch/dinner-time food stops. Leave travel time between stops. Put outdoor stops on dry days.',
+    'Every day needs breakfast, lunch and dinner at real restaurants or cafes. Leave travel time between stops. Put outdoor stops on dry days.',
+    'Honour every specific request in the traveller\'s note. "At sunset" means the stop starts about 30 minutes before that day\'s sunset time.',
     'Call propose_plan with the whole itinerary, read the Plan Doctor report, fix every error and resubmit.',
     'When the report has no errors, reply with a short, friendly summary (no tool call).',
   ].join('\n')

@@ -129,6 +129,7 @@ export interface DayWeather {
   max: number
   desc: string
   rain: boolean
+  sunset?: string // HH:MM local
 }
 
 const WMO: Record<number, string> = {
@@ -144,7 +145,7 @@ export async function forecast(
 ): Promise<Record<string, DayWeather>> {
   const url =
     `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
-    '&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code&forecast_days=16&timezone=auto'
+    '&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max,weather_code,sunset&forecast_days=16&timezone=auto'
   const res = await fetchImpl(url)
   if (!res.ok) return {}
   const d = (await res.json()) as {
@@ -154,6 +155,7 @@ export async function forecast(
       temperature_2m_min: number[]
       precipitation_probability_max: number[]
       weather_code: number[]
+      sunset?: string[]
     }
   }
   const out: Record<string, DayWeather> = {}
@@ -163,6 +165,7 @@ export async function forecast(
       min: Math.round(d.daily.temperature_2m_min[i]),
       desc: WMO[d.daily.weather_code[i]] ?? 'mixed',
       rain: (d.daily.precipitation_probability_max[i] ?? 0) >= 50,
+      sunset: d.daily.sunset?.[i]?.slice(11, 16) || undefined,
     }
   })
   return out
