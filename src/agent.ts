@@ -151,6 +151,7 @@ function profileLines(p?: Profile): string {
 const RULES = [
   'Every stop and the stay must use the EXACT "place" name of something find_places or geocode returned. Never invent places.',
   'Each day: breakfast, lunch and dinner at real restaurants/cafes/bakeries, plus sights or activities that fit the interests. No place twice in the trip.',
+  'Meal times: breakfast 07:30-10:00, lunch 12:00-14:30, dinner starts 18:30-21:00 (later where locals eat late, e.g. Spain).',
   'Keep stops in the same area per day, leave 15-30 min between stops for travel, respect the pace (chill 3-4 timed stops, balanced 5-6, packed 7-8 including meals).',
   'Outdoor stops on dry days; on rainy days prefer museums, galleries, markets, cafes.',
   'Honour every specific request in the traveller\'s note. "At sunset" means the stop starts about 30-45 min before that day\'s sunset.',
@@ -252,8 +253,12 @@ export function requestChecks(req: TripRequest, stops: Stop[], weather: Record<s
     }
   }
   for (const [date, day] of groupByDate(stops)) {
-    const food = day.filter((s) => s.category === 'food')
+    const food = sortDay(day.filter((s) => s.category === 'food'))
     if (food.length < 3) issues.push(issue(date, 'error', `Only ${food.length} meal stop(s) on ${date}. Every day needs breakfast, lunch and dinner.`))
+    const dinner = food.at(-1)
+    const dinnerAt = toMinutes(dinner?.start)
+    if (food.length >= 3 && dinnerAt != null && dinnerAt < 18 * 60)
+      issues.push(issue(date, 'error', `Dinner "${dinner!.title}" starts at ${dinner!.start}, too early. Move dinner to 18:30-21:00.`, [dinner!.id]))
   }
   return issues
 }

@@ -144,3 +144,11 @@ test('gateway LLM: connector URL, no Authorization header, token cap', async () 
   assert.equal(JSON.parse(String(init.body)).max_tokens, 1234)
   assert.equal(r.content, 'hi')
 })
+
+test('an early dinner is sent back to the model', () => {
+  const wx = { [D1]: { min: 10, max: 17, desc: 'clear', rain: false } }
+  const early = goodDay1.map((x, i) => ({ id: `e${i}`, ...(x.place === 'Cervejaria Ramiro' ? { ...x, start: '17:00', end: '18:00' } : x) }))
+  assert.ok(requestChecks({ ...req, prompt: '' }, early, wx).some((i) => /too early/.test(i.message)))
+  const fine = goodDay1.map((x, i) => ({ id: `f${i}`, ...x }))
+  assert.deepEqual(requestChecks({ ...req, prompt: '' }, fine, wx), [])
+})

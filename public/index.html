@@ -3,54 +3,30 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Hive · a trip agent on a Fly Sprite</title>
-  <link rel="stylesheet" href="/style.css" />
+  <title>Hive · your personal trip agent on a Fly.io Sprite</title>
+  <meta name="description" content="Hive researches real places, plans every meal, sight and stay, checks the plan against the forecast and fixes it, then lets you refine it by chat." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
-  <header>
-    <div class="brand"><span class="hex">⬢</span> Hive</div>
-    <p class="tag">A trip agent that lives on a <b>Fly.io Sprite</b>. It researches real places, drafts a plan, lets the Plan Doctor tear it apart, and fixes it until it holds up.</p>
+  <header class="top">
+    <a class="brand" href="/" data-nav="/"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 3 57 17.5v29L32 61 7 46.5v-29z" fill="#f5a524"/><path d="M32 15 46.7 23.5v17L32 49 17.3 40.5v-17z" fill="#1f1a17"/><circle cx="32" cy="32" r="6" fill="#f5a524"/></svg>Hive</a>
+    <nav>
+      <a href="/" data-nav="/">New trip</a>
+      <a href="/#trips" data-nav="/#trips">My trips</a>
+      <a href="/#profile" data-nav="/#profile">Profile</a>
+    </nav>
     <div id="health" class="health"></div>
   </header>
 
-  <main>
-    <form id="form" class="card">
-      <label>Where to?<input name="destination" required placeholder="Lisbon" /></label>
-      <div class="row">
-        <label>From<input type="date" name="startDate" required /></label>
-        <label>To<input type="date" name="endDate" required /></label>
-      </div>
-      <div class="row">
-        <label>Pace
-          <select name="pace"><option>chill</option><option selected>balanced</option><option>packed</option></select>
-        </label>
-        <label>Budget / day ($)<input type="number" name="dailyBudget" min="0" placeholder="120" /></label>
-        <label>Wake up<input type="time" name="wakeTime" value="08:00" /></label>
-      </div>
-      <label>Anything else?<textarea name="prompt" rows="2" placeholder="Seafood, one viewpoint at sunset, no museums on day 1"></textarea></label>
-      <label>Share to Slack channel (optional)<input name="slackChannel" placeholder="#trip-planning" /></label>
-      <button type="submit">Ask Hive</button>
-    </form>
+  <main id="app"></main>
 
-    <section id="live" class="card hidden">
-      <h2>Hive is working</h2>
-      <ol id="steps"></ol>
-    </section>
+  <footer class="foot">
+    <span>Hive runs on a <b>Fly.io Sprite</b>. The model is reached through the <b>Sprites OpenRouter connector</b>, so no API key lives on this machine.</span>
+    <span>Places © OpenStreetMap contributors via Photon · Weather by Open-Meteo · FX by Frankfurter · <a href="https://github.com/veerefines/hive-sprite" target="_blank" rel="noopener">Source</a></span>
+  </footer>
 
-    <section id="result" class="hidden">
-      <div class="card"><h2 id="r-title"></h2><p id="r-summary"></p><div id="r-issues"></div></div>
-      <div id="map"></div>
-      <div id="days"></div>
-    </section>
-
-    <section class="card">
-      <h2>Past trips on this Sprite</h2>
-      <ul id="trips"></ul>
-    </section>
-  </main>
-
-  <footer>Built for Fly.io Hacksgiving 2026 · LLM and Slack calls go through Sprites connectors, so no API keys live on this machine.</footer>
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/app.js"></script>
 </body>
