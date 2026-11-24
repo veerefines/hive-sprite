@@ -383,6 +383,7 @@ export function makeServer(
         try {
           const profile = await loadProfile()
           const trip = await runHive(parsed, { llm: makeLlm(), fetch: f, profile, maxSteps: 10, onStep: (e) => send({ type: 'step', ...e }) })
+          if (!trip.stops.length) throw new Error("Hive couldn't finish a plan this time (the free AI models are busy). Please try again in a few minutes.")
           send({ type: 'step', step: 98, tool: 'enrich', note: 'Routing between stops, pricing the trip, finding photos, packing list' })
           await enrich(trip, route, f)
           await saveTrip(trip)
