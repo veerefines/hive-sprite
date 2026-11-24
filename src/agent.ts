@@ -7,7 +7,7 @@
  * no errors, then writes a short summary. Optionally shares to Slack.
  */
 import { randomUUID } from 'node:crypto'
-import { checkPlan, groupByDate, type Issue, type PrefLike, type StopLike } from './lib/planCheck.ts'
+import { checkPlan, groupByDate, toMinutes, type Issue, type PrefLike, type StopLike } from './lib/planCheck.ts'
 import { slackPost, type ChatMessage, type Llm, type ToolSpec } from './connectors.ts'
 import { findPlaces, forecast, geocode, type DayWeather } from './world.ts'
 
@@ -141,6 +141,33 @@ function asStops(raw: unknown): StopLike[] {
     }))
 }
 
+/**
+ * Hive's own checks on top of the Plan Doctor: requests from the traveller's
+ * note that a model tends to forget. Currently: "at sunset".
+ */
+export function requestChecks(req: TripRequest, stops: StopLike[], weather: Record<string, DayWeather>): Issue[] {
+  const issues: Issue[] = []
+  if (/sunset/i.test(req.prompt)) {
+    const near = stops.filter((s) => {
+      const sunset = toMinutes(weather[s.date]?.sunset)
+      const start = toMinutes(s.start)
+      if (sunset == null || start == null) return false
+      return /sunset|viewpoint|miradouro|view/i.test(`${s.title} ${s.category ?? ''}`) && start >= sunset - 75 && start <= sunset - 10
+    })
+    if (!near.length) {
+      const day = Object.entries(weather).find(([d, w]) => d >= req.startDate && d <= req.endDate && w.sunset)
+      issues.push({
+        date: day?.[0] ?? req.startDate,
+        type: 'early-start',
+        severity: 'error',
+        message: `The traveller asked for a sunset stop, but no viewpoint starts 10-75 minutes before sunset${day ? ` (sunset ${day[1].sunset})` : ''}. Move one there.`,
+        stopIds: [],
+      })
+    }
+  }
+  return issues
+}
+
 function report(issues: Issue[]): string {
   if (!issues.length) return 'Plan Doctor: no issues. The plan is ready.'
   return (
@@ -230,7 +257,7 @@ export async function runHive(req: TripRequest, deps: AgentDeps): Promise<TripRe
           }
           case 'propose_plan': {
             stops = asStops(args.stops)
-            issues = checkPlan(trip, stops, prefs)
+            issues = [...checkPlan(trip, stops, prefs), ...requestChecks(req, stops, weather)]
             const errs = issues.filter((i) => i.severity === 'error').length
             note(step, 'propose_plan', `${stops.length} stops · ${errs} error(s), ${issues.length - errs} warning(s)`)
             result = report(issues)

@@ -123,3 +123,14 @@ test('find_places without a keyword lists nearby places by tag (Photon reverse)'
   assert.match(url, /photon\.komoot\.io\/reverse\?.*osm_tag=tourism:viewpoint/)
   assert.deepEqual(got.map((p) => p.name), ['Miradouro B'])
 })
+
+test('sunset requests are enforced as an error until a viewpoint sits before sunset', async () => {
+  const { requestChecks } = await import('../src/agent.ts')
+  const wx = { '2026-12-01': { min: 10, max: 17, desc: 'clear', rain: false, sunset: '17:18' } }
+  const r = { ...req, prompt: 'one viewpoint at sunset' }
+  const late = [{ id: 'a', ...stop('18:30', '19:30', 'Sunset at Miradouro', 'viewpoint') }]
+  const right = [{ id: 'b', ...stop('16:30', '17:30', 'Sunset at Miradouro', 'viewpoint') }]
+  assert.equal(requestChecks(r, late, wx)[0]?.severity, 'error')
+  assert.deepEqual(requestChecks(r, right, wx), [])
+  assert.deepEqual(requestChecks(req, late, wx), [])
+})
