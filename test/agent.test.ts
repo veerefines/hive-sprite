@@ -134,3 +134,12 @@ test('sunset requests are enforced as an error until a viewpoint sits before sun
   assert.deepEqual(requestChecks(r, right, wx), [])
   assert.deepEqual(requestChecks(req, late, wx), [])
 })
+
+test('daily quota resets each UTC day', async () => {
+  const { takeQuota } = await import('../src/server.ts')
+  const d1 = new Date('2030-01-01T10:00:00Z')
+  let n = 0
+  while (takeQuota(d1)) n++
+  assert.equal(n, 40)
+  assert.equal(takeQuota(new Date('2030-01-02T00:01:00Z')), true)
+})

@@ -75,6 +75,16 @@ const STATIC: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js',
 const TYPES: Record<string, string> = { html: 'text/html; charset=utf-8', js: 'text/javascript', css: 'text/css' }
 
 let running = 0
+// Public URL guard: cap plans per UTC day so strangers can't drain the LLM credit.
+const DAILY_LIMIT = Number(process.env.HIVE_DAILY_LIMIT ?? 40)
+const usage = { day: '', count: 0 }
+export function takeQuota(now = new Date()): boolean {
+  const day = now.toISOString().slice(0, 10)
+  if (usage.day !== day) Object.assign(usage, { day, count: 0 })
+  if (usage.count >= DAILY_LIMIT) return false
+  usage.count++
+  return true
+}
 
 export function makeServer(llmFactory: () => Llm = () => gatewayLlm()) {
   return createServer(async (req, res) => {
@@ -92,6 +102,7 @@ export function makeServer(llmFactory: () => Llm = () => gatewayLlm()) {
           llmConnector: !!process.env.HIVE_LLM_GATEWAY,
           slackConnector: !!process.env.HIVE_SLACK_GATEWAY,
           host: process.env.SPRITE_NAME ?? 'local',
+          plansLeftToday: Math.max(0, DAILY_LIMIT - (usage.day === new Date().toISOString().slice(0, 10) ? usage.count : 0)),
         })
       }
       if (req.method === 'GET' && url.pathname === '/api/trips') return json(res, 200, await listTrips())
@@ -114,6 +125,7 @@ export function makeServer(llmFactory: () => Llm = () => gatewayLlm()) {
         const parsed = validate(await body(req))
         if (typeof parsed === 'string') return json(res, 400, { error: parsed })
         if (running >= 2) return json(res, 429, { error: 'Hive is busy, try again in a minute' })
+        if (!takeQuota()) return json(res, 429, { error: 'Hive has planned its daily quota of trips. Past trips are still browsable below.' })
         running++
         // Stream progress as NDJSON so the page can show each agent step.
         res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-cache' })
