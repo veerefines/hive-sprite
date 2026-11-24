@@ -30,6 +30,8 @@ export interface AgentDeps {
   slack?: typeof slackPost
   maxSteps?: number
   onStep?: (entry: { step: number; tool: string; note: string }) => void
+  /** Extra find_places calls the model may make before it must draft (default 3). */
+  researchBudget?: number
   profile?: Profile
   remember?: (patch: Profile) => Promise<void> | void
 }
@@ -170,7 +172,7 @@ function planPrompt(r: TripRequest, weather: Record<string, DayWeather>, profile
     r.origin ? `Coming from ${r.origin}.` : '',
     profileLines(profile),
     wx ? `Forecast:\n${wx}` : 'No forecast yet for these dates (too far ahead); plan for typical weather.',
-    'Research first: find_places for hotels, restaurants (with keywords for their tastes), cafes/bakeries, sights, viewpoints, museums or parks that match the interests.',
+    'A shortlist of real places is provided. Search more only if something specific is missing (e.g. "ramen", "tea house"); call several find_places at once if you need them.',
     ...RULES,
     'Then call propose_plan with the WHOLE trip, read the Plan Doctor report, fix every error and resubmit.',
     'When the report has no errors, reply with a warm 2-3 sentence summary of the trip (no tool call).',
@@ -328,6 +330,52 @@ function evaluate(raw: Record<string, unknown>, req: TripRequest, weather: Recor
   }
 }
 
+// ---------- research (in code, not by the model) ----------
+
+const INTEREST_SEARCH: Record<string, Array<[string, string?]>> = {
+  food: [['restaurant']],
+  coffee: [['cafe']],
+  history: [['attraction'], ['museum']],
+  culture: [['attraction'], ['museum']],
+  art: [['gallery'], ['museum']],
+  architecture: [['attraction']],
+  nature: [['park']],
+  views: [['viewpoint']],
+  nightlife: [['bar']],
+  music: [['bar']],
+  markets: [['market']],
+  shopping: [['market']],
+}
+
+/** The searches every trip needs, run in parallel so the model doesn't spend steps on them. */
+export function researchPlan(r: TripRequest): Array<[string, string?]> {
+  const wanted: Array<[string, string?]> = [['hotel'], ['restaurant'], ['cafe'], ['bakery'], ['attraction'], ['viewpoint'], ['museum'], ['park']]
+  for (const i of r.interests ?? []) wanted.push(...(INTEREST_SEARCH[i] ?? []))
+  if (r.diet) wanted.push(['restaurant', r.diet.split(/[ ,]/)[0]])
+  const seen = new Set<string>()
+  return wanted.filter(([k, kw]) => {
+    const key = `${k}|${kw ?? ''}`
+    return !seen.has(key) && seen.add(key)
+  })
+}
+
+async function research(req: TripRequest, center: { lat: number; lng: number }, known: Record<string, Place>, f: typeof fetch, note: (step: number, tool: string, text: string) => void) {
+  const searches = researchPlan(req)
+  const found = await Promise.all(searches.map(([kind, kw]) => findPlaces(center.lat, center.lng, kind, 3000, f, kw ?? '').catch(() => [] as Place[])))
+  searches.forEach(([kind, kw], i) => {
+    for (const p of found[i]) known[p.name] = p
+    note(0, 'find_places', `${kind}${kw ? ` "${kw}"` : ''}: ${found[i].length} found`)
+  })
+}
+
+function shortlist(known: Record<string, Place>): string {
+  const byKind: Record<string, Place[]> = {}
+  for (const p of Object.values(known)) (byKind[p.kind] ??= []).length < 12 && byKind[p.kind].push(p)
+  return Object.entries(byKind)
+    .map(([k, list]) => `${k}:\n${list.map((p) => `- ${p.name} (${p.lat.toFixed(4)}, ${p.lng.toFixed(4)})`).join('\n')}`)
+    .join('\n')
+}
+
 // ---------- the loop ----------
 
 interface LoopResult {
@@ -344,12 +392,28 @@ async function loop(
 ): Promise<LoopResult> {
   const f = deps.fetch ?? fetch
   const maxSteps = deps.maxSteps ?? 16
+  const researchBudget = deps.researchBudget ?? 3
+  const planOnly = tools.filter((t) => t.function.name === 'propose_plan')
   let draft: Draft | undefined
   let best: Draft | undefined
   let nudges = 0
+  let searches = 0
+  let forced = false
   for (let step = 1; step <= maxSteps; step++) {
-    const reply = await deps.llm(messages, tools)
-    messages.push({ role: 'assistant', content: reply.content ?? null, tool_calls: reply.tool_calls })
+    // Out of research budget (or steps) with no draft yet: only propose_plan is allowed.
+    const mustDraftNow = ctx.mustPlan && !draft && (searches >= researchBudget || step >= maxSteps - 2)
+    if (mustDraftNow && !forced) {
+      forced = true
+      messages.push({ role: 'user', content: 'Research is done. Call propose_plan now with the WHOLE trip, using only places from the shortlist and your searches.' })
+    }
+    const clean = !!draft && !draft.issues.some((i) => i.severity === 'error')
+    // Clean draft: no tools, just the summary. Draft with errors and no search budget left: redraft only.
+    const offer = clean ? [] : mustDraftNow || (draft && searches >= researchBudget) ? planOnly : tools
+    const reply = await deps.llm(messages, offer)
+    // Ignore calls to tools that weren't offered this step.
+    const allowed = new Set(offer.map((t) => t.function.name))
+    if (reply.tool_calls) reply.tool_calls = reply.tool_calls.filter((c) => allowed.has(c.function.name))
+    messages.push({ role: 'assistant', content: reply.content ?? null, tool_calls: reply.tool_calls?.length ? reply.tool_calls : undefined })
     if (!reply.tool_calls?.length) {
       const clean = draft && !draft.issues.some((i) => i.severity === 'error')
       if (clean || (!ctx.mustPlan && !draft) || nudges >= 2) return { text: (reply.content ?? '').trim(), draft: clean ? draft : (best ?? draft) }
@@ -375,6 +439,11 @@ async function loop(
             break
           }
           case 'find_places': {
+            searches++
+            if (searches > researchBudget + 2) {
+              result = 'Search limit reached. Use the shortlist and call propose_plan.'
+              break
+            }
             const found = await findPlaces(Number(args.lat), Number(args.lng), String(args.kind), Number(args.radius_m) || 2500, f, String(args.keyword ?? ''))
             for (const p of found) ctx.known[p.name] = p
             note(step, 'find_places', `${args.kind}${args.keyword ? ` "${args.keyword}"` : ''}: ${found.length} found`)
@@ -431,9 +500,13 @@ export async function runHive(req: TripRequest, deps: AgentDeps): Promise<Trip> 
   const weather = center ? await forecast(center.lat, center.lng, f).catch(() => ({})) : {}
   note(0, 'setup', center ? `Found ${center.name} (${center.lat.toFixed(3)}, ${center.lng.toFixed(3)})` : 'Destination not geocoded')
   const known: Record<string, Place> = {}
+  if (center) await research(req, center, known, f, note)
   const messages: ChatMessage[] = [
     { role: 'system', content: planPrompt(req, weather, deps.profile) },
-    { role: 'user', content: `${req.prompt}${center ? `\n(Destination centre: ${center.lat}, ${center.lng})` : ''}` },
+    {
+      role: 'user',
+      content: `${req.prompt}${center ? `\n(Destination centre: ${center.lat}, ${center.lng})` : ''}\n\nHive already searched OpenStreetMap. Shortlist of real places (use exact names):\n${shortlist(known)}\n\nUse find_places only for something specific that is missing (at most 3 searches), then call propose_plan.`,
+    },
   ]
   const { text, draft } = await loop(messages, TOOLS, { req, weather, known, mustPlan: true }, deps, note)
   const now = new Date().toISOString()

@@ -85,7 +85,7 @@ export function gatewayLlm(
       const res = await fetchImpl(`${trimSlash(base)}/chat/completions`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', temperature: 0.3, max_tokens: maxTokens }),
+        body: JSON.stringify({ model, messages, ...(tools.length ? { tools, tool_choice: 'auto' } : {}), temperature: 0.3, max_tokens: maxTokens }),
       })
       if (res.ok) {
         const data = (await res.json()) as { choices?: Array<{ message?: LlmReply }>; error?: { message?: string } }

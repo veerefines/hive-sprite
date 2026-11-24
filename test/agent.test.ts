@@ -152,3 +152,23 @@ test('an early dinner is sent back to the model', () => {
   const fine = goodDay1.map((x, i) => ({ id: `f${i}`, ...x }))
   assert.deepEqual(requestChecks({ ...req, prompt: '' }, fine, wx), [])
 })
+
+test('free-tier economy: research runs in code, and a search-happy model is made to draft', async () => {
+  const toolSets: string[][] = []
+  const search = { content: null, tool_calls: [call('s', 'find_places', { lat: 38.72, lng: -9.14, kind: 'restaurant', keyword: 'more' })] }
+  let i = 0
+  const llm = (async (msgs: Array<{ content: string | null }>, tools: Array<{ function: { name: string } }>) => {
+    toolSets.push(tools.map((t) => t.function.name))
+    i++
+    if (i === 1) assert.match(String(msgs[1].content), /Shortlist of real places[\s\S]*Hotel Lisboa Centro[\s\S]*Cervejaria Ramiro/)
+    if (tools.length > 1) return search
+    if (tools.length === 0) return { content: 'done' }
+    if (i < 10) return { content: null, tool_calls: [call('p', 'propose_plan', { title: 'T', stay: { place: 'Hotel Lisboa Centro', why: 'x' }, stops: goodDay1 })] }
+    return { content: 'done' }
+  }) as never
+  const trip = await runHive({ ...req, prompt: 'food' }, { llm, fetch: fakeFetch, researchBudget: 2, maxSteps: 8 })
+  assert.deepEqual(toolSets.slice(0, 2).map((t) => t.length > 1), [true, true])
+  assert.deepEqual(toolSets[2], ['propose_plan'], 'after 2 searches only propose_plan is offered')
+  assert.equal(trip.stops.length, 5)
+  assert.ok(toolSets.length <= 5, `took ${toolSets.length} model calls`)
+})
