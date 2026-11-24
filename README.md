@@ -1,34 +1,39 @@
 # ⬢ Hive on a Sprite
 
-**A trip-planning agent that lives on a Fly.io Sprite, argues with a strict plan checker, and posts the result to your Slack.**
+**Your personal trip agent, living on a Fly.io Sprite.** Tell it where you're going; it researches real places, plans every meal, sight and the stay, checks the plan against the forecast and fixes it, works out how to get between stops and what it'll cost, then lets you refine the trip by chat.
 
-Built for [Fly.io Hacksgiving 2026](https://fly.io/hacksgiving/).
+**Live:** https://hive-b6t5u.sprites.app · Built for [Fly.io Hacksgiving 2026](https://fly.io/hacksgiving/)
 
-Tell Hive where you're going and how you like to travel. It:
+## What Hive does
 
-1. **Researches real places.** Geocodes the destination and pulls named restaurants, viewpoints, parks and museums from OpenStreetMap (via Photon, with Overpass as a fallback), plus the 16-day forecast.
-2. **Drafts a day-by-day plan** with times, coordinates and costs.
-3. **Gets torn apart by the Plan Doctor.** A deterministic checker (no LLM) flags overlapping stops, travel too tight to make, missing meals, outdoor stops on rainy days, budget overruns and starts before you're awake.
-4. **Fixes it and resubmits** until there are no errors left, then writes a short summary.
-5. **Shares it to Slack**, if you ask.
-
-You watch every step stream in live on the Sprite's URL, and every trip is saved on the Sprite's own disk.
+1. **Researches real places.** Geocodes the destination, then searches OpenStreetMap (Photon) for hotels, restaurants matched to your tastes, cafés, bakeries, sights, viewpoints, museums and parks.
+2. **Plans the whole trip.** A stay, breakfast/lunch/dinner every day, sights that fit your interests, each with *why it fits you* and a local tip, plus trip-wide tips.
+3. **Gets torn apart by the Plan Doctor, on repeat.** Deterministic checks (no LLM) send the draft back until it's clean:
+   - overlapping stops, travel too tight to make, starts before you're awake, too many stops for your pace
+   - outdoor stops on rainy days, budget overruns
+   - **any place Hive didn't actually find** (no invented restaurants; coordinates always come from the search result, never the model)
+   - a missing meal, dinner at 17:00, the same place twice, your "at sunset" request not landing before that day's sunset
+4. **Fills in everything around it.** Best way between every pair of stops (walk / transit / taxi with time, cost and the trade-off) on real street routes, a whole-trip cost estimate in local *and* home currency at live rates (flights from your home city included), how much cash to carry, rainy-day backups and extra ideas from its research.
+5. **Lets you refine it by chat.** "Make day 2 cheaper", "dinner is too early", "fit in that market". Hive researches, redrafts, re-runs the Plan Doctor, and comes back with a **suggestion and a diff** you accept or reject. It never edits your plan on its own.
+6. **Remembers you.** Tell it you're vegetarian or live in LA and it saves that to your profile on the Sprite's disk; every later trip uses it.
+7. **Takes it with you.** Add to calendar (.ics), print, share link, Slack.
 
 ## Why a Sprite
 
 | Sprites feature | What Hive uses it for |
 | --- | --- |
-| **Connectors** | Every LLM call goes through the **OpenRouter connector** and Slack posts go through the **Slack connector**. No API key is stored on the Sprite: requests carry no `Authorization` header, and the Sprites gateway attaches the credential. |
-| **Services** | Hive runs as a `sprite-env` service with `--http-port 8080`, so a request to a cold Sprite wakes it, starts Hive and serves the page. It costs nothing while idle. |
-| **Persistent disk** | Trips are plain JSON files in `~/hive/data/trips`, which survive sleep and cold boots. |
-| **Checkpoints** | Snapshot the Sprite before trying a new model or prompt, and roll back if it gets worse. |
+| **Connectors** | Every model call goes through the **Sprites OpenRouter connector** (`openai/gpt-4.1-mini` by default). No API key lives on the Sprite: requests carry no `Authorization` header; the gateway attaches the credential. Slack sharing uses the Slack connector. |
+| **Services** | Hive runs as a `sprite-env` service on `--http-port 8080`: a request to a cold Sprite wakes it, starts Hive and serves the page. Nothing runs (or costs) while idle. |
+| **Persistent disk** | Trips, chat history and your traveller profile are plain JSON in `~/hive/data`, surviving sleep and cold boots. This is what makes it a *personal* agent. |
+| **Checkpoints** | The Sprite was checkpointed before each model/prompt change, so a bad change rolls back in seconds. |
 
 ```
-browser ──HTTPS──▶ Sprite URL ──▶ hive service (:8080, Node, zero runtime deps)
-                                    │
-                                    ├─▶ api.sprites.dev/v1/gateway/openrouter/…  (LLM, key held by Fly)
-                                    ├─▶ api.sprites.dev/v1/gateway/slack_bot/…   (share, key held by Fly)
-                                    └─▶ OpenStreetMap + Open-Meteo                (public, keyless)
+browser ──HTTPS──▶ Sprite URL ──▶ hive service (:8080, Node 24, zero runtime deps)
+                                    ├─▶ api.sprites.dev/v1/gateway/openrouter/…   LLM (key held by Fly)
+                                    ├─▶ api.sprites.dev/v1/gateway/slack_bot/…    share (optional)
+                                    ├─▶ Photon / Nominatim (OpenStreetMap)        places, geocoding
+                                    ├─▶ OSRM (routing.openstreetmap.de)           street routes
+                                    └─▶ Open-Meteo · Frankfurter                  forecast, sunset · FX
 ```
 
 ## Run it on your own Sprite
@@ -38,29 +43,33 @@ sprite create hive
 sprite console -s hive
 # inside the Sprite:
 export HIVE_LLM_GATEWAY="https://api.sprites.dev/v1/gateway/openrouter/<connection_id>/v1"
-export HIVE_SLACK_GATEWAY="https://api.sprites.dev/v1/gateway/slack_bot/<connection_id>"   # optional
 curl -fsSL https://raw.githubusercontent.com/veerefines/hive-sprite/main/sprite/setup.sh | bash
 ```
 
-In the Fly dashboard, open **Connectors**, enable the OpenRouter connector (and Slack if you want sharing), and give the `hive` Sprite access with a name-prefix rule. Then run `sprite url update --auth public` to share the page.
+In the Fly dashboard: **Sprites → Connectors → Add connector → OpenRouter**, then give the `hive` Sprite access with a name-prefix rule. `sprite url update --auth public` shares the page. A public URL is capped at 40 plans and 150 chats a day (`HIVE_DAILY_LIMIT`, `HIVE_DAILY_CHAT_LIMIT`).
 
-Locally: `npm install && npm test`, then `HIVE_LLM_GATEWAY=… npm start`.
+Locally: `npm install && npm test` (12 tests, no network: scripted model, fake places, fake router), then `HIVE_LLM_GATEWAY=… npm start`.
 
 ## Where the code came from
 
-Hive's agent, server, connector layer, UI and tests were written during Hacksgiving week. The **Plan Doctor** (`src/lib/planCheck.ts`) and the distance helpers (`src/lib/geo.ts`) are reused, unchanged apart from one import path, from my earlier project [TripHive](https://github.com/veerefines/triphive), a group trip planner on Cloudflare Workers built just before the hackathon. Everything Sprites-specific is new.
+Everything Hive-on-a-Sprite was written during Hacksgiving week: the agent loop and prompts, place grounding and Hive's own checks, chat proposals, profile memory, enrichment, server, UI and tests. These pure modules are reused, unchanged apart from import paths, from my earlier project [TripHive](https://github.com/veerefines/triphive), a group trip planner on Cloudflare Workers built just before the hackathon:
 
-## Project layout
+- `src/lib/planCheck.ts` (Plan Doctor) and `src/lib/geo.ts`
+- `src/lib/legs.ts` (best way between stops), `src/lib/routing.ts` (OSRM)
+- `src/lib/budget.ts` and `src/lib/money.ts` (cost estimate, currencies)
+
+## Layout
 
 ```
-src/agent.ts        the tool loop: geocode, find_places, propose_plan → Plan Doctor → revise
+src/agent.ts        plan + revise loops, place grounding, Hive's checks, proposals
+src/enrich.ts       legs + routes, money + FX, budget, ideas, rainy backups, .ics
 src/connectors.ts   OpenRouter + Slack through the Sprites gateway
-src/world.ts        OpenStreetMap places, geocoding, Open-Meteo forecast
-src/server.ts       HTTP API + NDJSON progress stream + trip storage
-src/lib/            Plan Doctor and geo helpers (from TripHive)
-public/             the page
-sprite/setup.sh     installs Hive as a Sprite service
-test/               agent loop, connector and validation tests (scripted fake model)
+src/world.ts        Photon places, Nominatim geocoding, Open-Meteo forecast + sunset
+src/server.ts       HTTP API, NDJSON progress streams, storage, profile, quotas
+src/lib/            reused TripHive modules (see above)
+public/             the app (plain JS + Leaflet, no build step)
+sprite/             setup.sh (install as a service), run.sh (service entry)
+test/               agent, enrichment and full HTTP flow tests
 ```
 
 MIT licensed.
