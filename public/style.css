@@ -96,7 +96,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--honey); out
 .stat { background: #fff; border: 1px solid var(--line); border-radius: 14px; padding: 12px 14px; }
 .stat small { display: block; color: var(--mute); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
 .stat b { font-size: 20px; }
-.stat span { font-size: 12.5px; color: var(--mute); }
+.stat span { display: block; font-size: 12.5px; color: var(--mute); }
 .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 18px; overflow-x: auto; }
 .tabs button { border: 0; background: transparent; padding: 10px 14px; font-weight: 700; color: var(--mute); border-bottom: 2.5px solid transparent; cursor: pointer; white-space: nowrap; }
 .tabs button.on { color: var(--ink); border-color: var(--honey); }

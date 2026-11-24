@@ -253,6 +253,7 @@ function renderTrip() {
   const openProps = t.proposals.filter((p) => p.status === 'open').length
   const b = t.budget
   const legMin = t.legs.reduce((s, l) => s + l.best.minutes, 0)
+  const groundDay = groundPerDay(t)
   document.title = `${t.title} · Hive`
   app.innerHTML = `
   <div class="trip-head">
@@ -272,7 +273,7 @@ function renderTrip() {
   <div id="recheck-note"></div>
   <div class="stats">
     <div class="stat"><small>Per person</small><b>${b ? local(t, b.totalUsd) : '—'}</b><span>${b && t.money?.homeCurrency !== t.money?.currency ? `≈ ${home(t, b.totalUsd)}` : 'all-in estimate'}</span></div>
-    <div class="stat"><small>Per day</small><b>${b ? local(t, b.perDayUsd) : '—'}</b><span>${r.dailyBudget ? `budget $${r.dailyBudget}` : 'no budget set'}</span></div>
+    <div class="stat"><small>Per day, on the ground</small><b>${b ? local(t, groundDay) : '—'}</b><span>${r.dailyBudget ? `${groundDay <= r.dailyBudget ? '✅' : '⚠️'} budget ${local(t, r.dailyBudget)}` : 'excludes getting there'}</span></div>
     <div class="stat"><small>Stops</small><b>${t.stops.length}</b><span>${days.length} day${days.length > 1 ? 's' : ''} · ${Object.keys(t.known ?? {}).length} places researched</span></div>
     <div class="stat"><small>Getting around</small><b>${Math.round(legMin / 60)}h ${legMin % 60}m</b><span>${t.legs.filter((l) => l.best.mode === 'walk').length} of ${t.legs.length} legs on foot</span></div>
   </div>
@@ -426,6 +427,12 @@ function drawMap() {
 }
 
 // ---------- costs ----------
+function groundPerDay(t) {
+  const b = t.budget
+  if (!b) return 0
+  const travel = b.lines.find((l) => l.category === 'travel')?.usd ?? 0
+  return Math.round((b.totalUsd - travel * 1.1) / daysBetween(t.request.startDate, t.request.endDate))
+}
 function costsHtml(t) {
   const b = t.budget
   if (!b) return '<p class="muted">No cost estimate yet.</p>'
@@ -437,7 +444,7 @@ function costsHtml(t) {
       <small class="muted">ALL-IN ESTIMATE PER PERSON</small>
       <div class="big">${local(t, b.totalUsd)}</div>
       ${twoCur ? `<div class="muted">≈ ${home(t, b.totalUsd)} in ${esc(t.money.homeCurrency)}</div>` : ''}
-      <p>About <b>${local(t, b.perDayUsd)}</b> a day${t.request.dailyBudget ? ` against your $${t.request.dailyBudget} budget (${b.perDayUsd <= t.request.dailyBudget ? '✅ under' : '⚠️ over'})` : ''}. For ${tr} traveller${tr > 1 ? 's' : ''}: <b>${local(t, b.totalUsd * tr)}</b> total.</p>
+      <p>On the ground that's about <b>${local(t, groundPerDay(t))}</b> a day${t.request.dailyBudget ? ` against your ${local(t, t.request.dailyBudget)} daily budget (${groundPerDay(t) <= t.request.dailyBudget ? '✅ under' : '⚠️ over'})` : ''}, plus getting there. For ${tr} traveller${tr > 1 ? 's' : ''}: <b>${local(t, b.totalUsd * tr)}</b> all in.</p>
       ${b.cashUsd ? `<div class="notice warn"><span>💵</span><div>Carry about <b>${local(t, b.cashUsd)}</b> in cash per person${t.money?.country ? ` — ${esc(t.money.country)} is ${Math.round((t.money.cashShare ?? 0) * 100)}% cash for day-to-day spend` : ''}.</div></div>` : ''}
       <p class="muted" style="font-size:12.5px">Prices in ${esc(t.money?.currency ?? 'USD')}${t.money?.live ? ' at today’s rates (Frankfurter)' : ' at offline rates'}. Planned prices come first, then local price levels.</p>
     </div>
