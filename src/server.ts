@@ -82,16 +82,37 @@ async function saveTrip(t: Trip) {
   await rename(tmp, tripPath(t.id))
 }
 
+/** Fill fields that older trip files (v1) don't have. */
+export function normalizeTrip(t: Partial<Trip> & { id: string; request: TripRequest }): Trip {
+  const n = t as Trip
+  n.createdAt ??= new Date().toISOString()
+  n.updatedAt ??= n.createdAt
+  n.stops ??= []
+  n.issues ??= []
+  n.forecast ??= {}
+  n.tips ??= []
+  n.legs ??= []
+  n.ideas ??= {}
+  n.rainyBackups ??= []
+  n.known ??= {}
+  n.log ??= []
+  n.chat ??= []
+  n.proposals ??= []
+  n.summary ??= ''
+  n.title ??= `${n.request.destination.split(',')[0]} trip`
+  return n
+}
+
 async function loadTrip(id: string): Promise<Trip | null> {
   if (!/^[\w-]{1,40}$/.test(id)) return null
   const raw = await readFile(tripPath(id), 'utf8').catch(() => null)
-  return raw ? (JSON.parse(raw) as Trip) : null
+  return raw ? normalizeTrip(JSON.parse(raw)) : null
 }
 
 async function listTrips() {
   const dir = join(DATA, 'trips')
   const files = await readdir(dir).catch(() => [] as string[])
-  const trips = await Promise.all(files.filter((f) => f.endsWith('.json')).map((f) => readFile(join(dir, f), 'utf8').then((x) => JSON.parse(x) as Trip).catch(() => null)))
+  const trips = await Promise.all(files.filter((f) => f.endsWith('.json')).map((f) => readFile(join(dir, f), 'utf8').then((x) => normalizeTrip(JSON.parse(x))).catch(() => null)))
   return trips
     .filter((t): t is Trip => !!t)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
