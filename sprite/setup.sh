@@ -16,14 +16,15 @@ if [ -d "$DIR/.git" ]; then git -C "$DIR" pull --ff-only; else git clone --depth
 NODE="$(command -v node)"
 "$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); if (a<22||(a===22&&b<18)) {console.error("Node >= 22.18 needed for type stripping, found "+process.versions.node); process.exit(1)}'
 
-ENV="PORT=8080,HIVE_DATA_DIR=$DIR/data,SPRITE_NAME=${SPRITE_NAME:-$(hostname)},HIVE_LLM_GATEWAY=$HIVE_LLM_GATEWAY"
-[ -n "${HIVE_SLACK_GATEWAY:-}" ] && ENV="$ENV,HIVE_SLACK_GATEWAY=$HIVE_SLACK_GATEWAY"
-[ -n "${HIVE_MODEL:-}" ] && ENV="$ENV,HIVE_MODEL=$HIVE_MODEL"
+# Connector URLs live in hive.env (git-ignored), read by sprite/run.sh at start.
+{
+  echo "HIVE_LLM_GATEWAY=$HIVE_LLM_GATEWAY"
+  [ -n "${HIVE_SLACK_GATEWAY:-}" ] && echo "HIVE_SLACK_GATEWAY=$HIVE_SLACK_GATEWAY"
+  [ -n "${HIVE_MODEL:-}" ] && echo "HIVE_MODEL=$HIVE_MODEL"
+} > "$DIR/hive.env"
 
 sprite-env services delete hive >/dev/null 2>&1 || true
-sprite-env services create hive \
-  --cmd "$NODE" --args "src/server.ts" --dir "$DIR" \
-  --env "$ENV" --http-port 8080 --duration 8s
+sprite-env services create hive --cmd "$DIR/sprite/run.sh" --http-port 8080 --duration 8s
 
 curl -fsS localhost:8080/api/health && echo
 echo "Hive is up. Make the URL public with: sprite url update --auth public"
