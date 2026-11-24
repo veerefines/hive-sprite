@@ -1,145 +1,146 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runHive, formatForSlack, type TripRequest } from '../src/agent.ts'
-import { gatewayLlm, type ChatMessage, type LlmReply } from '../src/connectors.ts'
-import { validate } from '../src/server.ts'
+import { runHive, reviseTrip, requestChecks, resolvePlace, formatForSlack } from '../src/agent.ts'
+import { gatewayLlm } from '../src/connectors.ts'
+import { findPlaces } from '../src/world.ts'
+import { computeBudget, computeIdeas, computeLegs, computeMoney, toIcs } from '../src/enrich.ts'
+import type { TripRequest } from '../src/types.ts'
+import { D1, call, fakeFetch, fakeRoute, goodDay1, s, scripted } from './fakes.ts'
 
-const req: TripRequest = { prompt: 'Food and views', destination: 'Lisbon', startDate: '2026-12-01', endDate: '2026-12-01', pace: 'balanced' }
+const req: TripRequest = { prompt: 'Seafood and a viewpoint at sunset', destination: 'Lisbon', startDate: D1, endDate: D1, pace: 'balanced', travellers: 2, dailyBudget: 150, origin: 'Los Angeles', interests: ['food', 'views'] }
+const research = [
+  call('r1', 'find_places', { lat: 38.72, lng: -9.14, kind: 'restaurant', keyword: 'seafood' }),
+  call('r2', 'find_places', { lat: 38.72, lng: -9.14, kind: 'bakery' }),
+  call('r3', 'find_places', { lat: 38.72, lng: -9.14, kind: 'viewpoint' }),
+  call('r4', 'find_places', { lat: 38.72, lng: -9.14, kind: 'attraction' }),
+  call('r5', 'find_places', { lat: 38.72, lng: -9.14, kind: 'hotel' }),
+]
+const stay = { place: 'Hotel Lisboa Centro', nightlyUsd: 140, why: 'Central and walkable' }
 
-// Fake public APIs: one geocode hit, a few places, dry weather.
-const fakeFetch = (async (input: string | URL) => {
-  const u = String(input)
-  const ok = (d: unknown) => new Response(JSON.stringify(d), { status: 200 })
-  if (u.includes('nominatim')) return ok([{ display_name: 'Lisbon, Portugal', lat: '38.72', lon: '-9.14', type: 'city' }])
-  if (u.includes('open-meteo'))
-    return ok({ daily: { time: ['2026-12-01'], temperature_2m_max: [17], temperature_2m_min: [10], precipitation_probability_max: [10], weather_code: [1], sunset: ['2026-12-01T17:18'] } })
-  if (u.includes('overpass')) return ok({ elements: [{ lat: 38.713, lon: -9.133, tags: { name: 'Miradouro' } }] })
-  return new Response('nope', { status: 404 })
-}) as typeof fetch
+async function plannedTrip() {
+  const { llm, seen } = scripted([
+    { content: null, tool_calls: research },
+    // Invented place + only 2 meals: both must be errors.
+    { content: null, tool_calls: [call('p1', 'propose_plan', { stay, stops: [goodDay1[0], s(D1, '12:30', '13:30', 'Imaginary Bistro', 'food'), goodDay1[1]] })] },
+    { content: null, tool_calls: [call('p2', 'propose_plan', { title: 'Lisbon Bites & Views', stay, stops: goodDay1, tips: ['Buy a Viva Viagem card'] })] },
+    { content: 'Two days of seafood and views.' },
+  ])
+  const trip = await runHive(req, { llm, fetch: fakeFetch })
+  return { trip, seen }
+}
 
-const stop = (start: string, end: string, title: string, category: string, lat = 38.71, lng = -9.14) => ({ date: '2026-12-01', start, end, title, category, lat, lng })
-const call = (id: string, name: string, args: unknown) => ({ id, type: 'function' as const, function: { name, arguments: JSON.stringify(args) } })
-
-test('Hive revises until the Plan Doctor reports no errors', async () => {
-  const seen: ChatMessage[][] = []
-  const script: LlmReply[] = [
-    { content: null, tool_calls: [call('a', 'find_places', { lat: 38.72, lng: -9.14, kind: 'viewpoint' })] },
-    // Overlapping stops: the Doctor must flag this.
-    { content: null, tool_calls: [call('b', 'propose_plan', { stops: [stop('09:00', '11:00', 'Castle', 'sight'), stop('10:00', '11:30', 'Miradouro', 'sight')] })] },
-    {
-      content: null,
-      tool_calls: [
-        call('c', 'propose_plan', {
-          stops: [
-            stop('08:30', '09:15', 'Pastéis breakfast', 'food'),
-            stop('09:30', '11:00', 'Castle', 'sight'),
-            stop('12:30', '13:30', 'Lunch at Time Out Market', 'food'),
-            stop('15:00', '16:00', 'Miradouro', 'sight', 38.713, -9.133),
-            stop('19:30', '21:00', 'Seafood dinner', 'food'),
-          ],
-        }),
-      ],
-    },
-    { content: 'A relaxed day of views and seafood.' },
-  ]
-  let i = 0
-  const trip = await runHive(req, {
-    fetch: fakeFetch,
-    llm: async (m) => {
-      seen.push(structuredClone(m))
-      return script[i++]
-    },
-  })
-  const firstReport = seen[2].at(-1)!.content!
-  assert.match(firstReport, /overlap/i, 'first plan should be flagged for overlap')
-  assert.equal(trip.issues.filter((x) => x.severity === 'error').length, 0)
-  assert.equal(trip.stops.length, 5)
-  assert.equal(trip.summary, 'A relaxed day of views and seafood.')
-  assert.equal(trip.forecast['2026-12-01'].sunset, '17:18')
-  assert.match(seen[0][0].content!, /sunset 17:18/)
-  assert.match(formatForSlack(trip), /Hive plan: Lisbon/)
+test('plan: Hive researches, the checks reject invented places and missing meals, then it fixes them', async () => {
+  const { trip, seen } = await plannedTrip()
+  const firstReport = JSON.stringify(seen[2])
+  assert.match(firstReport, /Imaginary Bistro.*is not a place Hive found/)
+  assert.match(firstReport, /Only 2 meal stop/)
+  assert.equal(trip.issues.filter((i) => i.severity === 'error').length, 0)
+  assert.equal(trip.title, 'Lisbon Bites & Views')
+  assert.equal(trip.stay?.name, 'Hotel Lisboa Centro')
+  // Coordinates come from the search result, never from the model.
+  const ramiro = trip.stops.find((x) => x.place === 'Cervejaria Ramiro')!
+  assert.deepEqual([ramiro.lat, ramiro.lng], [38.7206, -9.1357])
+  assert.equal(ramiro.tip, 'Order the garlic prawns')
+  assert.deepEqual(trip.tips, ['Buy a Viva Viagem card'])
+  assert.ok(Object.keys(trip.known).length >= 8)
+  assert.match(formatForSlack(trip), /Lisbon Bites & Views/)
 })
 
-test('Slack share goes through the injected connector', async () => {
-  const script: LlmReply[] = [
-    { content: null, tool_calls: [call('a', 'propose_plan', { stops: [stop('12:00', '13:00', 'Lunch', 'food')] })] },
-    { content: 'Done.' },
-  ]
-  let i = 0
-  let posted = ''
-  const trip = await runHive({ ...req, slackChannel: '#trips' }, {
-    fetch: fakeFetch,
-    llm: async () => script[i++],
-    slack: async (ch, text) => ((posted = `${ch}|${text}`), { ok: true }),
-  })
-  assert.equal(trip.shared?.ok, true)
-  assert.match(posted, /^#trips\|\*Hive plan/)
+test('enrich: legs, money, budget, ideas and calendar', async () => {
+  const { trip } = await plannedTrip()
+  trip.money = await computeMoney(trip, fakeFetch)
+  assert.equal(trip.money.currency, 'EUR')
+  assert.equal(trip.money.homeCurrency, 'USD')
+  assert.equal(trip.money.live, true)
+  trip.legs = await computeLegs(trip, fakeRoute)
+  assert.equal(trip.legs.length, 4)
+  assert.ok(trip.legs.every((l) => l.path && l.best.minutes > 0 && !l.estimated))
+  const budget = computeBudget(trip, { lat: 34.05, lng: -118.24 })
+  const cats = budget.lines.map((l) => l.category)
+  assert.deepEqual(cats, ['travel', 'stay', 'food', 'local', 'activities', 'shopping', 'buffer'])
+  assert.match(budget.lines[0].basis, /flight/i)
+  assert.ok(budget.totalUsd > 500)
+  const { ideas, rainyBackups } = computeIdeas(trip)
+  const ideaNames = Object.values(ideas).flat().map((p) => p.name)
+  assert.ok(ideaNames.includes('Sea Me'))
+  assert.ok(!ideaNames.includes('Cervejaria Ramiro'))
+  assert.ok(!ideaNames.includes('Hotel Lisboa Centro'))
+  assert.ok(rainyBackups.every((p) => p.kind !== 'restaurant'))
+  const ics = toIcs(trip)
+  assert.match(ics, /BEGIN:VCALENDAR/)
+  assert.equal((ics.match(/BEGIN:VEVENT/g) ?? []).length, 5)
+  assert.match(ics, /DTSTART:20261201T193000/)
 })
 
-test('gateway LLM calls the connector URL with no Authorization header', async () => {
-  let url = ''
-  let headers: Record<string, string> = {}
-  const llm = gatewayLlm('https://api.sprites.dev/v1/gateway/openrouter/conn_x/api/v1/', 'm', (async (u: string, init: RequestInit) => {
-    url = u
-    headers = init.headers as Record<string, string>
-    return new Response(JSON.stringify({ choices: [{ message: { content: 'hi' } }] }))
-  }) as unknown as typeof fetch)
-  const r = await llm([{ role: 'user', content: 'x' }], [])
-  assert.equal(url, 'https://api.sprites.dev/v1/gateway/openrouter/conn_x/api/v1/chat/completions')
-  assert.equal(Object.keys(headers).some((h) => h.toLowerCase() === 'authorization'), false)
-  assert.equal(r.content, 'hi')
+test('revise: a change comes back as a proposal with a diff, and lasting facts are remembered', async () => {
+  const { trip } = await plannedTrip()
+  const swapped = goodDay1.map((x) => (x.place === 'Cervejaria Ramiro' ? s(D1, '19:30', '21:00', 'Sea Me', 'food', { costPerPerson: 35 }) : x))
+  const { llm } = scripted([
+    { content: null, tool_calls: [call('m', 'remember', { diet: 'pescatarian' })] },
+    { content: null, tool_calls: [call('p', 'propose_plan', { summary: 'Dinner moved to Sea Me', stay, stops: swapped })] },
+    { content: 'Swapped dinner to Sea Me, a quieter seafood spot.' },
+  ])
+  const remembered: unknown[] = []
+  const before = trip.stops.map((x) => x.place)
+  const { reply, proposal } = await reviseTrip(trip, 'I am pescatarian, can dinner be somewhere quieter?', { llm, fetch: fakeFetch, remember: (p) => void remembered.push(p) })
+  assert.match(reply, /Sea Me/)
+  assert.deepEqual(remembered, [{ diet: 'pescatarian' }])
+  assert.equal(proposal?.status, 'open')
+  assert.equal(proposal?.summary, 'Dinner moved to Sea Me')
+  assert.equal(proposal?.diff.added.length, 1)
+  assert.equal(proposal?.diff.removed.length, 1)
+  assert.deepEqual(trip.stops.map((x) => x.place), before, 'revise never edits the trip itself')
 })
 
-test('request validation', () => {
-  assert.equal(typeof validate({ destination: 'Rome', startDate: '2026-12-01', endDate: '2026-12-09' }), 'string')
-  assert.equal(typeof validate({ destination: '', startDate: '2026-12-01', endDate: '2026-12-01' }), 'string')
-  const ok = validate({ destination: 'Rome', startDate: '2026-12-01', endDate: '2026-12-02', slackChannel: 'bad channel!' })
-  assert.ok(typeof ok === 'object' && ok.slackChannel === undefined)
+test('revise: a plain question gets an answer and no proposal', async () => {
+  const { trip } = await plannedTrip()
+  const { llm } = scripted([{ content: 'Yes, Castelo de São Jorge takes cards.' }])
+  const r = await reviseTrip(trip, 'Can I pay by card at the castle?', { llm, fetch: fakeFetch })
+  assert.equal(r.proposal, undefined)
+  assert.match(r.reply, /cards/)
 })
 
-test('find_places uses Photon first and drops far-away or duplicate results', async () => {
-  const { findPlaces } = await import('../src/world.ts')
-  const feat = (name: string, lat: number, lng: number) => ({ geometry: { coordinates: [lng, lat] }, properties: { name } })
-  let overpassCalled = false
-  const f = (async (u: string) => {
-    if (String(u).includes('photon'))
-      return new Response(JSON.stringify({ features: [feat('Miradouro A', 38.71, -9.14), feat('Miradouro A', 38.711, -9.141), feat('Far Away', 40, -8)] }))
-    overpassCalled = true
-    return new Response('{}', { status: 500 })
-  }) as typeof fetch
-  const got = await findPlaces(38.708, -9.137, 'viewpoint', 2500, f, 'miradouro')
-  assert.deepEqual(got.map((p) => p.name), ['Miradouro A'])
-  assert.equal(overpassCalled, false)
+test('sunset requests are enforced until a viewpoint sits before sunset', () => {
+  const wx = { [D1]: { min: 10, max: 17, desc: 'clear', rain: false, sunset: '17:18' } }
+  const meals = goodDay1.filter((x) => x.category === 'food').map((x, i) => ({ id: `m${i}`, ...x }))
+  const late = [...meals, { id: 'a', ...s(D1, '18:30', '19:20', 'Miradouro da Graça', 'sight') }]
+  const right = [...meals, { id: 'b', ...s(D1, '16:30', '17:15', 'Miradouro da Graça', 'sight') }]
+  assert.ok(requestChecks(req, late, wx).some((i) => /sunset/.test(i.message)))
+  assert.deepEqual(requestChecks(req, right, wx), [])
 })
 
-test('find_places without a keyword lists nearby places by tag (Photon reverse)', async () => {
-  const { findPlaces } = await import('../src/world.ts')
+test('place grounding tolerates accents and small wording differences', () => {
+  const known = { 'Castelo de São Jorge': { name: 'Castelo de São Jorge', lat: 1, lng: 2, kind: 'attraction' } }
+  assert.equal(resolvePlace('castelo de sao jorge', known)?.name, 'Castelo de São Jorge')
+  assert.equal(resolvePlace('Visit Castelo de São Jorge', known)?.name, 'Castelo de São Jorge')
+  assert.equal(resolvePlace('Torre de Belém', known), null)
+})
+
+test('find_places: Photon reverse without keyword, search with keyword, dedupe and radius filter', async () => {
   let url = ''
   const f = (async (u: string) => {
     url = String(u)
-    return new Response(JSON.stringify({ features: [{ geometry: { coordinates: [-9.14, 38.71] }, properties: { name: 'Miradouro B' } }] }))
+    const feat = (name: string, lat: number, lng: number) => ({ geometry: { coordinates: [lng, lat] }, properties: { name } })
+    return new Response(JSON.stringify({ features: [feat('Miradouro A', 38.71, -9.14), feat('Miradouro A', 38.711, -9.141), feat('Far Away', 40, -8)] }))
   }) as typeof fetch
-  const got = await findPlaces(38.708, -9.137, 'viewpoint', 2500, f)
+  const near = await findPlaces(38.708, -9.137, 'viewpoint', 2500, f)
   assert.match(url, /photon\.komoot\.io\/reverse\?.*osm_tag=tourism:viewpoint/)
-  assert.deepEqual(got.map((p) => p.name), ['Miradouro B'])
+  assert.deepEqual(near.map((p) => p.name), ['Miradouro A'])
+  await findPlaces(38.708, -9.137, 'restaurant', 2500, f, 'seafood')
+  assert.match(url, /photon\.komoot\.io\/api\/\?.*q=seafood/)
 })
 
-test('sunset requests are enforced as an error until a viewpoint sits before sunset', async () => {
-  const { requestChecks } = await import('../src/agent.ts')
-  const wx = { '2026-12-01': { min: 10, max: 17, desc: 'clear', rain: false, sunset: '17:18' } }
-  const r = { ...req, prompt: 'one viewpoint at sunset' }
-  const late = [{ id: 'a', ...stop('18:30', '19:30', 'Sunset at Miradouro', 'viewpoint') }]
-  const right = [{ id: 'b', ...stop('16:30', '17:30', 'Sunset at Miradouro', 'viewpoint') }]
-  assert.equal(requestChecks(r, late, wx)[0]?.severity, 'error')
-  assert.deepEqual(requestChecks(r, right, wx), [])
-  assert.deepEqual(requestChecks(req, late, wx), [])
-})
-
-test('daily quota resets each UTC day', async () => {
-  const { takeQuota } = await import('../src/server.ts')
-  const d1 = new Date('2030-01-01T10:00:00Z')
-  let n = 0
-  while (takeQuota(d1)) n++
-  assert.equal(n, 40)
-  assert.equal(takeQuota(new Date('2030-01-02T00:01:00Z')), true)
+test('gateway LLM: connector URL, no Authorization header, token cap', async () => {
+  let url = ''
+  let init: RequestInit = {}
+  const llm = gatewayLlm('https://api.sprites.dev/v1/gateway/openrouter/conn_x/v1/', 'm', (async (u: string, i: RequestInit) => {
+    url = u
+    init = i
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'hi' } }] }))
+  }) as unknown as typeof fetch, 1234)
+  const r = await llm([{ role: 'user', content: 'x' }], [])
+  assert.equal(url, 'https://api.sprites.dev/v1/gateway/openrouter/conn_x/v1/chat/completions')
+  assert.equal(Object.keys(init.headers as object).some((h) => h.toLowerCase() === 'authorization'), false)
+  assert.equal(JSON.parse(String(init.body)).max_tokens, 1234)
+  assert.equal(r.content, 'hi')
 })

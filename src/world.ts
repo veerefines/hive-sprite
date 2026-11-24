@@ -33,7 +33,13 @@ const KINDS: Record<string, [string, string, string]> = {
   park: ['leisure:park', 'park', '["leisure"="park"]'],
   bar: ['amenity:bar', 'bar', '["amenity"="bar"]'],
   market: ['amenity:marketplace', 'market', '["amenity"="marketplace"]'],
+  gallery: ['tourism:gallery', 'gallery', '["tourism"="gallery"]'],
+  bakery: ['shop:bakery', 'bakery', '["shop"="bakery"]'],
+  hotel: ['tourism:hotel', 'hotel', '["tourism"="hotel"]'],
+  hostel: ['tourism:hostel', 'hostel', '["tourism"="hostel"]'],
 }
+
+export const PLACE_KINDS = Object.keys(KINDS)
 
 function km(aLat: number, aLng: number, bLat: number, bLng: number): number {
   const r = (d: number) => (d * Math.PI) / 180

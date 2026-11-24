@@ -1,19 +1,25 @@
 /**
  * Hive's HTTP front door. Runs as a Sprite service on port 8080.
- * Trips are saved as JSON on the Sprite's persistent disk.
+ * Trips and the traveller profile are JSON files on the Sprite's persistent disk.
  */
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gatewayLlm, slackPost, type Llm } from './connectors.ts'
-import { formatForSlack, runHive, type TripRequest, type TripResult } from './agent.ts'
+import { checkTrip, formatForSlack, reviseTrip, runHive, type Profile } from './agent.ts'
+import { computeBudget, computeIdeas, computeLegs, computeMoney, toIcs, type Router } from './enrich.ts'
+import { routeBetween } from './lib/routing.ts'
+import { countryFor } from './lib/money.ts'
+import { forecast, geocode } from './world.ts'
+import type { Trip, TripRequest } from './types.ts'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const PUBLIC = process.env.HIVE_PUBLIC_DIR ?? join(HERE, '..', 'public')
 const DATA = process.env.HIVE_DATA_DIR ?? join(HERE, '..', 'data')
 const PORT = Number(process.env.PORT ?? 8080)
 const DATE = /^\d{4}-\d{2}-\d{2}$/
+const INTERESTS = ['food', 'culture', 'history', 'art', 'nature', 'nightlife', 'shopping', 'architecture', 'coffee', 'markets', 'views', 'music']
 
 async function body(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
@@ -43,101 +49,270 @@ export function validate(raw: unknown): TripRequest | string {
   if (days > 5) return 'Hive plans up to 5 days at a time'
   const pace = ['chill', 'balanced', 'packed'].includes(String(r.pace)) ? (r.pace as TripRequest['pace']) : 'balanced'
   const channel = String(r.slackChannel ?? '').trim()
+  const interests = (Array.isArray(r.interests) ? r.interests : String(r.interests ?? '').split(','))
+    .map((x) => String(x).trim().toLowerCase())
+    .filter((x) => INTERESTS.includes(x))
   return {
     destination,
     startDate,
     endDate,
     pace,
     prompt: String(r.prompt ?? '').slice(0, 1000) || `Plan a great ${days}-day trip to ${destination}.`,
-    dailyBudget: Number(r.dailyBudget) > 0 ? Number(r.dailyBudget) : undefined,
+    dailyBudget: Number(r.dailyBudget) > 0 ? Math.min(5000, Number(r.dailyBudget)) : undefined,
     wakeTime: /^\d{2}:\d{2}$/.test(String(r.wakeTime)) ? String(r.wakeTime) : undefined,
+    travellers: Math.min(12, Math.max(1, Math.round(Number(r.travellers) || 1))),
+    origin: String(r.origin ?? '').trim().slice(0, 120) || undefined,
+    interests: [...new Set(interests)],
+    diet: String(r.diet ?? '').trim().slice(0, 80) || undefined,
     slackChannel: /^[#@]?[\w-]{1,80}$/.test(channel) ? channel : undefined,
   }
 }
 
-async function saveTrip(t: TripResult) {
+// ---------- storage ----------
+
+const tripPath = (id: string) => join(DATA, 'trips', `${id}.json`)
+
+async function saveTrip(t: Trip) {
+  t.updatedAt = new Date().toISOString()
   await mkdir(join(DATA, 'trips'), { recursive: true })
-  await writeFile(join(DATA, 'trips', `${t.id}.json`), JSON.stringify(t, null, 2))
+  const tmp = `${tripPath(t.id)}.tmp`
+  await writeFile(tmp, JSON.stringify(t))
+  await rename(tmp, tripPath(t.id))
+}
+
+async function loadTrip(id: string): Promise<Trip | null> {
+  if (!/^[\w-]{1,40}$/.test(id)) return null
+  const raw = await readFile(tripPath(id), 'utf8').catch(() => null)
+  return raw ? (JSON.parse(raw) as Trip) : null
 }
 
 async function listTrips() {
   const dir = join(DATA, 'trips')
   const files = await readdir(dir).catch(() => [] as string[])
-  const trips = await Promise.all(
-    files.filter((f) => f.endsWith('.json')).map(async (f) => JSON.parse(await readFile(join(dir, f), 'utf8')) as TripResult),
-  )
+  const trips = await Promise.all(files.filter((f) => f.endsWith('.json')).map((f) => readFile(join(dir, f), 'utf8').then((x) => JSON.parse(x) as Trip).catch(() => null)))
   return trips
+    .filter((t): t is Trip => !!t)
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map((t) => ({ id: t.id, createdAt: t.createdAt, destination: t.request.destination, startDate: t.request.startDate, endDate: t.request.endDate, stops: t.stops.length }))
+    .map((t) => ({
+      id: t.id,
+      title: t.title,
+      createdAt: t.createdAt,
+      destination: t.center?.name ?? t.request.destination,
+      startDate: t.request.startDate,
+      endDate: t.request.endDate,
+      stops: t.stops.length,
+      totalUsd: t.budget?.totalUsd,
+    }))
 }
 
-const STATIC: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css' }
-const TYPES: Record<string, string> = { html: 'text/html; charset=utf-8', js: 'text/javascript', css: 'text/css' }
+const profilePath = () => join(DATA, 'profile.json')
+export async function loadProfile(): Promise<Profile> {
+  return JSON.parse((await readFile(profilePath(), 'utf8').catch(() => '{}')) || '{}') as Profile
+}
+export async function mergeProfile(patch: Profile): Promise<Profile> {
+  const cur = await loadProfile()
+  const next: Profile = { ...cur, ...patch, notes: [...(cur.notes ?? []), ...(patch.notes ?? [])].slice(-10) }
+  if (patch.interests) next.interests = [...new Set([...(cur.interests ?? []), ...patch.interests])].slice(0, 12)
+  await mkdir(DATA, { recursive: true })
+  await writeFile(profilePath(), JSON.stringify(next, null, 2))
+  return next
+}
 
-let running = 0
-// Public URL guard: cap plans per UTC day so strangers can't drain the LLM credit.
-const DAILY_LIMIT = Number(process.env.HIVE_DAILY_LIMIT ?? 40)
-const usage = { day: '', count: 0 }
-export function takeQuota(now = new Date()): boolean {
+// ---------- enrichment ----------
+
+export async function enrich(trip: Trip, route: Router = routeBetween, f: typeof fetch = fetch): Promise<Trip> {
+  if (trip.request.origin && trip.originPoint === undefined) {
+    const o = await geocode(trip.request.origin, f).catch(() => null)
+    trip.originPoint = o ? { lat: o.lat, lng: o.lng } : null
+  }
+  trip.money = await computeMoney(trip, f)
+  const index = countryFor(trip.center?.address ?? trip.request.destination)?.index ?? 1
+  trip.legs = await computeLegs(trip, route, index)
+  trip.budget = computeBudget(trip, trip.originPoint ?? null)
+  Object.assign(trip, computeIdeas(trip))
+  return trip
+}
+
+// ---------- quotas ----------
+
+const LIMITS = { plan: Number(process.env.HIVE_DAILY_LIMIT ?? 40), chat: Number(process.env.HIVE_DAILY_CHAT_LIMIT ?? 150) }
+const usage = { day: '', plan: 0, chat: 0 }
+export function takeQuota(now = new Date(), kind: 'plan' | 'chat' = 'plan'): boolean {
   const day = now.toISOString().slice(0, 10)
-  if (usage.day !== day) Object.assign(usage, { day, count: 0 })
-  if (usage.count >= DAILY_LIMIT) return false
-  usage.count++
+  if (usage.day !== day) Object.assign(usage, { day, plan: 0, chat: 0 })
+  if (usage[kind] >= LIMITS[kind]) return false
+  usage[kind]++
   return true
 }
+function left(kind: 'plan' | 'chat') {
+  return Math.max(0, LIMITS[kind] - (usage.day === new Date().toISOString().slice(0, 10) ? usage[kind] : 0))
+}
 
-export function makeServer(llmFactory: () => Llm = () => gatewayLlm()) {
+// ---------- server ----------
+
+const STATIC: Record<string, string> = { '/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/favicon.svg': 'favicon.svg' }
+const TYPES: Record<string, string> = { html: 'text/html; charset=utf-8', js: 'text/javascript; charset=utf-8', css: 'text/css; charset=utf-8', svg: 'image/svg+xml' }
+
+let running = 0
+const busyTrips = new Set<string>()
+
+function ndjson(res: ServerResponse) {
+  res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-cache', 'x-accel-buffering': 'no' })
+  return (obj: unknown) => res.write(JSON.stringify(obj) + '\n')
+}
+
+export function makeServer(llmFactory: () => Llm = () => gatewayLlm(), route: Router = routeBetween, f: typeof fetch = fetch) {
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://local')
+    const p = url.pathname
     try {
-      if (req.method === 'GET' && STATIC[url.pathname]) {
-        const file = STATIC[url.pathname]
+      const file = STATIC[p] ?? (/^\/t\/[\w-]{1,40}$/.test(p) ? 'index.html' : undefined)
+      if (req.method === 'GET' && file) {
         const content = await readFile(join(PUBLIC, file))
-        res.writeHead(200, { 'content-type': TYPES[file.split('.').pop()!] })
+        res.writeHead(200, { 'content-type': TYPES[file.split('.').pop()!], 'cache-control': 'no-cache' })
         return res.end(content)
       }
-      if (req.method === 'GET' && url.pathname === '/api/health') {
+      if (req.method === 'GET' && p === '/api/health') {
         return json(res, 200, {
           ok: true,
           llmConnector: !!process.env.HIVE_LLM_GATEWAY,
           slackConnector: !!process.env.HIVE_SLACK_GATEWAY,
+          model: process.env.HIVE_MODEL ?? 'openai/gpt-4.1-mini',
           host: process.env.SPRITE_NAME ?? 'local',
-          plansLeftToday: Math.max(0, DAILY_LIMIT - (usage.day === new Date().toISOString().slice(0, 10) ? usage.count : 0)),
+          plansLeftToday: left('plan'),
+          chatsLeftToday: left('chat'),
         })
       }
-      if (req.method === 'GET' && url.pathname === '/api/trips') return json(res, 200, await listTrips())
-      const m = /^\/api\/trips\/([\w-]{1,40})(\/share)?$/.exec(url.pathname)
+      if (p === '/api/profile') {
+        if (req.method === 'GET') return json(res, 200, await loadProfile())
+        if (req.method === 'PUT') {
+          const b = (await body(req)) as Record<string, unknown>
+          const clean: Profile = {
+            homeCity: b.homeCity ? String(b.homeCity).slice(0, 80) : undefined,
+            diet: b.diet ? String(b.diet).slice(0, 80) : undefined,
+            interests: Array.isArray(b.interests) ? b.interests.map(String).filter((x) => INTERESTS.includes(x)) : undefined,
+            pace: ['chill', 'balanced', 'packed'].includes(String(b.pace)) ? String(b.pace) : undefined,
+            dailyBudget: Number(b.dailyBudget) > 0 ? Number(b.dailyBudget) : undefined,
+          }
+          await mkdir(DATA, { recursive: true })
+          const cur = await loadProfile()
+          const next = { ...clean, notes: cur.notes }
+          await writeFile(profilePath(), JSON.stringify(next, null, 2))
+          return json(res, 200, next)
+        }
+      }
+      if (req.method === 'GET' && p === '/api/trips') return json(res, 200, await listTrips())
+
+      const m = /^\/api\/trips\/([\w-]{1,40})(?:\/(chat|recheck|share|calendar\.ics|proposals\/([\w-]{1,40})\/(accept|reject)))?$/.exec(p)
       if (m) {
-        const raw = await readFile(join(DATA, 'trips', `${m[1]}.json`), 'utf8').catch(() => null)
-        if (!raw) return json(res, 404, { error: 'not found' })
-        const trip = JSON.parse(raw) as TripResult
-        if (req.method === 'GET' && !m[2]) return json(res, 200, trip)
-        if (req.method === 'POST' && m[2]) {
+        const [, id, action, pid, verdict] = m
+        const trip = await loadTrip(id)
+        if (!trip) return json(res, 404, { error: 'Trip not found' })
+
+        if (req.method === 'GET' && !action) return json(res, 200, trip)
+
+        if (req.method === 'GET' && action === 'calendar.ics') {
+          res.writeHead(200, { 'content-type': 'text/calendar; charset=utf-8', 'content-disposition': `attachment; filename="hive-${trip.id}.ics"` })
+          return res.end(toIcs(trip))
+        }
+
+        if (req.method === 'POST' && action === 'share') {
           const { channel } = (await body(req)) as { channel?: string }
-          if (!channel) return json(res, 400, { error: 'channel required' })
+          if (!channel || !/^[#@]?[\w-]{1,80}$/.test(channel)) return json(res, 400, { error: 'channel required' })
           const r = await slackPost(channel, formatForSlack(trip))
           trip.shared = { channel, ...r }
           await saveTrip(trip)
           return json(res, r.ok ? 200 : 502, trip.shared)
         }
+
+        if (req.method === 'POST' && action === 'recheck') {
+          const before = new Set(trip.issues.map((i) => i.message))
+          if (trip.center) trip.forecast = await forecast(trip.center.lat, trip.center.lng, f).catch(() => trip.forecast)
+          trip.forecastCheckedAt = new Date().toISOString()
+          trip.issues = checkTrip(trip)
+          await enrich(trip, route, f)
+          await saveTrip(trip)
+          const fresh = trip.issues.filter((i) => !before.has(i.message))
+          return json(res, 200, { trip, newIssues: fresh })
+        }
+
+        if (req.method === 'POST' && pid && verdict) {
+          const prop = trip.proposals.find((x) => x.id === pid)
+          if (!prop) return json(res, 404, { error: 'Proposal not found' })
+          if (prop.status !== 'open') return json(res, 409, { error: `Proposal already ${prop.status}` })
+          if (verdict === 'reject') {
+            prop.status = 'rejected'
+          } else {
+            const newest = trip.proposals.filter((x) => x.status === 'open').at(-1)
+            if (newest && newest.id !== prop.id) {
+              prop.status = 'stale'
+              await saveTrip(trip)
+              return json(res, 409, { error: 'A newer suggestion replaced this one.', trip })
+            }
+            prop.status = 'accepted'
+            trip.stops = prop.stops
+            if (prop.stay) trip.stay = prop.stay
+            trip.issues = checkTrip(trip)
+            await enrich(trip, route, f)
+          }
+          trip.chat.push({ role: 'hive', text: verdict === 'accept' ? `Done. "${prop.summary}" is now in your plan.` : 'No problem, I kept the plan as it was.', at: new Date().toISOString() })
+          await saveTrip(trip)
+          return json(res, 200, trip)
+        }
+
+        if (req.method === 'POST' && action === 'chat') {
+          const { message } = (await body(req)) as { message?: string }
+          const text = String(message ?? '').trim().slice(0, 600)
+          if (!text) return json(res, 400, { error: 'message required' })
+          if (busyTrips.has(trip.id)) return json(res, 429, { error: 'Hive is still working on this trip.' })
+          if (!takeQuota(new Date(), 'chat')) return json(res, 429, { error: 'Hive has used its chat quota for today.' })
+          busyTrips.add(trip.id)
+          const send = ndjson(res)
+          try {
+            for (const prop of trip.proposals) if (prop.status === 'open') prop.status = 'stale'
+            const profile = await loadProfile()
+            const { reply, proposal } = await reviseTrip(trip, text, {
+              llm: llmFactory(),
+              fetch: f,
+              profile,
+              maxSteps: 12,
+              remember: async (patch) => void (await mergeProfile(patch)),
+              onStep: (e) => send({ type: 'step', ...e }),
+            })
+            const at = new Date().toISOString()
+            trip.chat.push({ role: 'user', text, at })
+            if (proposal) trip.proposals.push(proposal)
+            trip.chat.push({ role: 'hive', text: reply, at: new Date().toISOString(), proposalId: proposal?.id })
+            trip.chat = trip.chat.slice(-60)
+            trip.proposals = trip.proposals.slice(-20)
+            await saveTrip(trip)
+            send({ type: 'done', trip })
+          } catch (err) {
+            send({ type: 'error', error: (err as Error).message })
+          } finally {
+            busyTrips.delete(trip.id)
+            res.end()
+          }
+          return
+        }
       }
-      if (req.method === 'POST' && url.pathname === '/api/plan') {
+
+      if (req.method === 'POST' && p === '/api/plan') {
         const parsed = validate(await body(req))
         if (typeof parsed === 'string') return json(res, 400, { error: parsed })
-        if (running >= 2) return json(res, 429, { error: 'Hive is busy, try again in a minute' })
-        if (!takeQuota()) return json(res, 429, { error: 'Hive has planned its daily quota of trips. Past trips are still browsable below.' })
+        if (running >= 2) return json(res, 429, { error: 'Hive is busy with two trips already, try again in a minute.' })
+        if (!takeQuota(new Date(), 'plan')) return json(res, 429, { error: 'Hive has planned its daily quota of trips. Past trips are still browsable.' })
         running++
-        // Stream progress as NDJSON so the page can show each agent step.
-        res.writeHead(200, { 'content-type': 'application/x-ndjson', 'cache-control': 'no-cache' })
+        const send = ndjson(res)
         try {
-          const trip = await runHive(parsed, {
-            llm: llmFactory(),
-            onStep: (e) => res.write(JSON.stringify({ type: 'step', ...e }) + '\n'),
-          })
+          const profile = await loadProfile()
+          const trip = await runHive(parsed, { llm: llmFactory(), fetch: f, profile, onStep: (e) => send({ type: 'step', ...e }) })
+          send({ type: 'step', step: 98, tool: 'enrich', note: 'Routing between stops, pricing the trip, collecting extra ideas' })
+          await enrich(trip, route, f)
           await saveTrip(trip)
-          res.write(JSON.stringify({ type: 'done', trip }) + '\n')
+          send({ type: 'done', trip })
         } catch (err) {
-          res.write(JSON.stringify({ type: 'error', error: (err as Error).message }) + '\n')
+          send({ type: 'error', error: (err as Error).message })
         } finally {
           running--
           res.end()

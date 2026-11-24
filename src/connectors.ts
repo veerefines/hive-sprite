@@ -47,18 +47,21 @@ function trimSlash(s: string): string {
  */
 export function gatewayLlm(
   base = process.env.HIVE_LLM_GATEWAY ?? '',
-  model = process.env.HIVE_MODEL ?? 'meta-llama/llama-3.3-70b-instruct',
+  model = process.env.HIVE_MODEL ?? 'openai/gpt-4.1-mini',
   fetchImpl: typeof fetch = fetch,
+  maxTokens = Number(process.env.HIVE_MAX_TOKENS ?? 6000),
 ): Llm {
   if (!base) throw new Error('HIVE_LLM_GATEWAY is not set: point it at your LLM connector URL')
   return async (messages, tools) => {
-    const res = await fetchImpl(`${trimSlash(base)}/chat/completions`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', temperature: 0.3 }),
-    })
-    if (!res.ok) throw new Error(`LLM connector ${res.status}: ${(await res.text()).slice(0, 300)}`)
-    const data = (await res.json()) as { choices?: Array<{ message?: LlmReply }> }
+    const body = JSON.stringify({ model, messages, tools, tool_choice: 'auto', temperature: 0.3, max_tokens: maxTokens })
+    let res: Response | undefined
+    for (let attempt = 0; attempt < 2; attempt++) {
+      res = await fetchImpl(`${trimSlash(base)}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
+      if (res.ok || (res.status !== 429 && res.status < 500)) break
+      await new Promise((r) => setTimeout(r, 1500))
+    }
+    if (!res!.ok) throw new Error(`LLM connector ${res!.status}: ${(await res!.text()).slice(0, 300)}`)
+    const data = (await res!.json()) as { choices?: Array<{ message?: LlmReply }> }
     const msg = data.choices?.[0]?.message
     if (!msg) throw new Error('LLM connector returned no message')
     return { content: msg.content ?? null, tool_calls: msg.tool_calls }
