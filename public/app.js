@@ -93,7 +93,7 @@ async function stream(path, body, onEvent) {
 }
 async function cover(name) {
   if (covers[name] !== undefined) return covers[name]
-  covers[name] = await api(`/api/cover?q=${encodeURIComponent(name.split(',')[0])}`).catch(() => ({}))
+  covers[name] = await api(`/api/cover?v=2&q=${encodeURIComponent(name.split(',')[0])}`).catch(() => ({}))
   return covers[name]
 }
 const stepIcon = (e) => ({ setup: '📍', geocode: '📍', find_places: '🔎', propose_plan: '🩺', enrich: '🧭', remember: '🧠', slack: '💬' })[e.tool] ?? '•'

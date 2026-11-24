@@ -256,7 +256,7 @@ export function makeServer(
       if (req.method === 'GET' && p === '/api/cover') {
         const q = String(url.searchParams.get('q') ?? '').trim().slice(0, 80)
         if (!q) return json(res, 400, { error: 'q required' })
-        res.setHeader('cache-control', 'public, max-age=86400')
+        res.setHeader('cache-control', 'public, max-age=3600')
         return json(res, 200, (await photoForDestination(q, f)) ?? {})
       }
 
