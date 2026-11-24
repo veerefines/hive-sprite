@@ -43,7 +43,7 @@ function trimSlash(s: string): string {
 /**
  * OpenAI-compatible chat completions through the OpenRouter (or any
  * OpenAI-compatible) connector. Base URL example:
- *   https://api.sprites.dev/v1/gateway/openrouter/conn_abc123/api/v1
+ *   https://api.sprites.dev/v1/gateway/openrouter/conn_abc123/v1
  */
 export function gatewayLlm(
   base = process.env.HIVE_LLM_GATEWAY ?? '',

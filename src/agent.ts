@@ -63,6 +63,7 @@ const TOOLS: ToolSpec[] = [
           lng: { type: 'number' },
           kind: { type: 'string', enum: ['restaurant', 'cafe', 'museum', 'attraction', 'viewpoint', 'park', 'bar', 'market'] },
           radius_m: { type: 'number' },
+          keyword: { type: 'string', description: 'Optional, e.g. "seafood", "pastry", "miradouro"' },
         },
         required: ['lat', 'lng', 'kind'],
       },
@@ -112,7 +113,9 @@ function systemPrompt(r: TripRequest, weather: Record<string, DayWeather>): stri
     `Plan ${r.destination} from ${r.startDate} to ${r.endDate}.`,
     `Pace: ${r.pace ?? 'balanced'}. Daily budget per person: ${r.dailyBudget ? `$${r.dailyBudget}` : 'not set'}. Wake time: ${r.wakeTime ?? '08:00'}.`,
     wx ? `Forecast:\n${wx}` : 'No forecast available for these dates.',
-    'Rules: use only real places returned by find_places or geocode, with their coordinates.',
+    'Research first: call find_places several times (food, sights, viewpoints, parks) before proposing anything.',
+    'Rules: every stop title must be the real name of a place returned by find_places or geocode (e.g. "Lunch at Cervejaria Ramiro"), with its coordinates.',
+    'Never use generic titles like "breakfast" or "walk around", and never repeat a place across the trip.',
     'Include breakfast/lunch/dinner-time food stops. Leave travel time between stops. Put outdoor stops on dry days.',
     'Call propose_plan with the whole itinerary, read the Plan Doctor report, fix every error and resubmit.',
     'When the report has no errors, reply with a short, friendly summary (no tool call).',
@@ -219,8 +222,9 @@ export async function runHive(req: TripRequest, deps: AgentDeps): Promise<TripRe
             break
           }
           case 'find_places': {
-            result = await findPlaces(Number(args.lat), Number(args.lng), String(args.kind), Number(args.radius_m) || 2500, f)
-            note(step, 'find_places', `${args.kind}: ${(result as unknown[]).length} found`)
+            const found = await findPlaces(Number(args.lat), Number(args.lng), String(args.kind), Number(args.radius_m) || 2500, f, String(args.keyword ?? ''))
+            note(step, 'find_places', `${args.kind}${args.keyword ? ` "${args.keyword}"` : ''}: ${found.length} found`)
+            result = found.length ? found : 'No places found. Try another kind, keyword or a wider radius. Do not invent places.'
             break
           }
           case 'propose_plan': {

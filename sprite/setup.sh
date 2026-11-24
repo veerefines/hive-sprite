@@ -2,7 +2,7 @@
 # Run INSIDE the Sprite (sprite console, or the Sprites MCP exec tool).
 # Installs Hive and registers it as a Sprite service that owns the Sprite's URL.
 #
-#   HIVE_LLM_GATEWAY   OpenRouter connector URL ending in /api/v1 (from the connector's detail page)
+#   HIVE_LLM_GATEWAY   OpenRouter connector URL ending in /v1 (from the connector's detail page)
 #   HIVE_SLACK_GATEWAY Slack connector URL (optional)
 #   HIVE_MODEL         OpenRouter model id (optional)
 set -euo pipefail

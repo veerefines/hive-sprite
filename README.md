@@ -6,7 +6,7 @@ Built for [Fly.io Hacksgiving 2026](https://fly.io/hacksgiving/).
 
 Tell Hive where you're going and how you like to travel. It:
 
-1. **Researches real places.** Geocodes the destination and pulls named restaurants, viewpoints, parks and museums from OpenStreetMap, plus the 16-day forecast.
+1. **Researches real places.** Geocodes the destination and pulls named restaurants, viewpoints, parks and museums from OpenStreetMap (via Photon, with Overpass as a fallback), plus the 16-day forecast.
 2. **Drafts a day-by-day plan** with times, coordinates and costs.
 3. **Gets torn apart by the Plan Doctor.** A deterministic checker (no LLM) flags overlapping stops, travel too tight to make, missing meals, outdoor stops on rainy days, budget overruns and starts before you're awake.
 4. **Fixes it and resubmits** until there are no errors left, then writes a short summary.
@@ -37,7 +37,7 @@ browser ──HTTPS──▶ Sprite URL ──▶ hive service (:8080, Node, zer
 sprite create hive
 sprite console -s hive
 # inside the Sprite:
-export HIVE_LLM_GATEWAY="https://api.sprites.dev/v1/gateway/openrouter/<connection_id>/api/v1"
+export HIVE_LLM_GATEWAY="https://api.sprites.dev/v1/gateway/openrouter/<connection_id>/v1"
 export HIVE_SLACK_GATEWAY="https://api.sprites.dev/v1/gateway/slack_bot/<connection_id>"   # optional
 curl -fsSL https://raw.githubusercontent.com/veerefines/hive-sprite/main/sprite/setup.sh | bash
 ```

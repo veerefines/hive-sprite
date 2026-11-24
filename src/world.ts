@@ -23,32 +23,72 @@ export async function geocode(query: string, fetchImpl: typeof fetch = fetch): P
   return { name: r.display_name.split(',')[0], lat: Number(r.lat), lng: Number(r.lon), kind: r.type, address: r.display_name }
 }
 
-const KINDS: Record<string, string> = {
-  restaurant: '["amenity"="restaurant"]',
-  cafe: '["amenity"="cafe"]',
-  museum: '["tourism"="museum"]',
-  attraction: '["tourism"="attraction"]',
-  viewpoint: '["tourism"="viewpoint"]',
-  park: '["leisure"="park"]',
-  bar: '["amenity"="bar"]',
-  market: '["amenity"="marketplace"]',
+// kind -> [Photon osm_tag, search word, Overpass filter]
+const KINDS: Record<string, [string, string, string]> = {
+  restaurant: ['amenity:restaurant', 'restaurant', '["amenity"="restaurant"]'],
+  cafe: ['amenity:cafe', 'cafe', '["amenity"="cafe"]'],
+  museum: ['tourism:museum', 'museum', '["tourism"="museum"]'],
+  attraction: ['tourism:attraction', 'attraction', '["tourism"="attraction"]'],
+  viewpoint: ['tourism:viewpoint', 'viewpoint', '["tourism"="viewpoint"]'],
+  park: ['leisure:park', 'park', '["leisure"="park"]'],
+  bar: ['amenity:bar', 'bar', '["amenity"="bar"]'],
+  market: ['amenity:marketplace', 'market', '["amenity"="marketplace"]'],
 }
 
-export async function findPlaces(
-  lat: number,
-  lng: number,
-  kind: string,
-  radiusM = 2500,
-  fetchImpl: typeof fetch = fetch,
-): Promise<Place[]> {
-  const filter = KINDS[kind] ?? KINDS.attraction
-  const q = `[out:json][timeout:20];nwr${filter}["name"](around:${Math.min(radiusM, 8000)},${lat},${lng});out center 15;`
-  const res = await fetchImpl('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': UA },
-    body: `data=${encodeURIComponent(q)}`,
-  })
-  if (!res.ok) return []
+function km(aLat: number, aLng: number, bLat: number, bLng: number): number {
+  const r = (d: number) => (d * Math.PI) / 180
+  const h = Math.sin(r(bLat - aLat) / 2) ** 2 + Math.cos(r(aLat)) * Math.cos(r(bLat)) * Math.sin(r(bLng - aLng) / 2) ** 2
+  return 12742 * Math.asin(Math.sqrt(h))
+}
+
+async function withTimeout(p: (signal: AbortSignal) => Promise<Response>, ms: number): Promise<Response | null> {
+  const ctl = new AbortController()
+  const t = setTimeout(() => ctl.abort(), ms)
+  try {
+    return await p(ctl.signal)
+  } catch {
+    return null
+  } finally {
+    clearTimeout(t)
+  }
+}
+
+/** Photon (komoot's OpenStreetMap search): fast, location-biased, filtered by OSM tag. */
+async function photon(lat: number, lng: number, kind: string, keyword: string, radiusKm: number, f: typeof fetch): Promise<Place[]> {
+  const [tag, word] = KINDS[kind] ?? KINDS.attraction
+  const q = encodeURIComponent(keyword || word)
+  const url = `https://photon.komoot.io/api/?lat=${lat}&lon=${lng}&limit=25&osm_tag=${tag}&q=${q}`
+  const res = await withTimeout((signal) => f(url, { headers: { 'user-agent': UA }, signal }), 8000)
+  if (!res?.ok) return []
+  const data = (await res.json()) as {
+    features: Array<{ geometry: { coordinates: [number, number] }; properties: Record<string, string> }>
+  }
+  return data.features
+    .map((ft) => ({
+      name: ft.properties.name ?? '',
+      lat: ft.geometry.coordinates[1],
+      lng: ft.geometry.coordinates[0],
+      kind,
+      address: [ft.properties.street, ft.properties.housenumber, ft.properties.district].filter(Boolean).join(' ') || undefined,
+    }))
+    .filter((p) => p.name && km(lat, lng, p.lat, p.lng) <= radiusKm)
+}
+
+/** Overpass fallback: exact radius query, but the public instance is often slow. */
+async function overpass(lat: number, lng: number, kind: string, radiusM: number, f: typeof fetch): Promise<Place[]> {
+  const filter = (KINDS[kind] ?? KINDS.attraction)[2]
+  const q = `[out:json][timeout:8];nwr${filter}["name"](around:${radiusM},${lat},${lng});out center 15;`
+  const res = await withTimeout(
+    (signal) =>
+      f('https://overpass-api.de/api/interpreter', {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded', 'user-agent': UA },
+        body: `data=${encodeURIComponent(q)}`,
+        signal,
+      }),
+    10000,
+  )
+  if (!res?.ok) return []
   const data = (await res.json()) as {
     elements: Array<{ lat?: number; lon?: number; center?: { lat: number; lon: number }; tags?: Record<string, string> }>
   }
@@ -61,7 +101,22 @@ export async function findPlaces(
       address: [e.tags?.['addr:street'], e.tags?.['addr:housenumber']].filter(Boolean).join(' ') || undefined,
     }))
     .filter((p) => p.name && Number.isFinite(p.lat))
-    .slice(0, 12)
+}
+
+export async function findPlaces(
+  lat: number,
+  lng: number,
+  kind: string,
+  radiusM = 2500,
+  fetchImpl: typeof fetch = fetch,
+  keyword = '',
+): Promise<Place[]> {
+  const r = Math.min(Math.max(radiusM, 500), 8000)
+  let places = await photon(lat, lng, kind, keyword, (r / 1000) * 1.5, fetchImpl).catch(() => [])
+  if (!places.length && keyword) places = await photon(lat, lng, kind, '', (r / 1000) * 1.5, fetchImpl).catch(() => [])
+  if (!places.length) places = await overpass(lat, lng, kind, r, fetchImpl).catch(() => [])
+  const seen = new Set<string>()
+  return places.filter((p) => !seen.has(p.name) && seen.add(p.name)).slice(0, 12)
 }
 
 export interface DayWeather {

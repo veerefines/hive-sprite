@@ -95,3 +95,18 @@ test('request validation', () => {
   const ok = validate({ destination: 'Rome', startDate: '2026-12-01', endDate: '2026-12-02', slackChannel: 'bad channel!' })
   assert.ok(typeof ok === 'object' && ok.slackChannel === undefined)
 })
+
+test('find_places uses Photon first and drops far-away or duplicate results', async () => {
+  const { findPlaces } = await import('../src/world.ts')
+  const feat = (name: string, lat: number, lng: number) => ({ geometry: { coordinates: [lng, lat] }, properties: { name } })
+  let overpassCalled = false
+  const f = (async (u: string) => {
+    if (String(u).includes('photon'))
+      return new Response(JSON.stringify({ features: [feat('Miradouro A', 38.71, -9.14), feat('Miradouro A', 38.711, -9.141), feat('Far Away', 40, -8)] }))
+    overpassCalled = true
+    return new Response('{}', { status: 500 })
+  }) as typeof fetch
+  const got = await findPlaces(38.708, -9.137, 'viewpoint', 2500, f, 'miradouro')
+  assert.deepEqual(got.map((p) => p.name), ['Miradouro A'])
+  assert.equal(overpassCalled, false)
+})
