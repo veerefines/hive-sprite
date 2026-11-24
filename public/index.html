@@ -5,16 +5,21 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Hive · your personal trip agent on a Fly.io Sprite</title>
   <meta name="description" content="Hive researches real places, plans every meal, sight and stay, checks the plan against the forecast and fixes it, then lets you refine it by chat." />
+  <meta property="og:title" content="Hive · your personal trip agent on a Fly.io Sprite" />
+  <meta property="og:description" content="Real places, a full day-by-day plan, routes, costs and a packing list. Refine it by chat." />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" />
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="/style.css" />
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="/" data-nav="/"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 3 57 17.5v29L32 61 7 46.5v-29z" fill="#f5a524"/><path d="M32 15 46.7 23.5v17L32 49 17.3 40.5v-17z" fill="#1f1a17"/><circle cx="32" cy="32" r="6" fill="#f5a524"/></svg>Hive</a>
+    <a class="brand" href="/" data-nav="/"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 3 57 17.5v29L32 61 7 46.5v-29z" fill="#f5a524"/><path d="M32 15 46.7 23.5v17L32 49 17.3 40.5v-17z" fill="#17130f"/><circle cx="32" cy="32" r="6" fill="#f5a524"/></svg>Hive</a>
     <nav>
-      <a href="/" data-nav="/">New trip</a>
-      <a href="/#trips" data-nav="/#trips">My trips</a>
+      <a href="/" data-nav="/">Plan</a>
+      <a href="/#trips" data-nav="/#trips">Trips</a>
       <a href="/#profile" data-nav="/#profile">Profile</a>
     </nav>
     <div id="health" class="health"></div>
@@ -22,9 +27,14 @@
 
   <main id="app"></main>
 
+  <div class="scrim" id="scrim"></div>
+  <aside class="drawer" id="drawer" aria-hidden="true"></aside>
+  <aside class="drawer chatpanel" id="chat" aria-hidden="true"></aside>
+  <div class="toast" id="toast"></div>
+
   <footer class="foot">
-    <span>Hive runs on a <b>Fly.io Sprite</b>. The model is reached through the <b>Sprites OpenRouter connector</b>, so no API key lives on this machine.</span>
-    <span>Places © OpenStreetMap contributors via Photon · Weather by Open-Meteo · FX by Frankfurter · <a href="https://github.com/veerefines/hive-sprite" target="_blank" rel="noopener">Source</a></span>
+    <span>Hive runs on a <b>Fly.io Sprite</b>. Its AI is reached through the <b>Sprites OpenRouter connector</b> on free models only, so no API key lives on this machine and nothing is billed.</span>
+    <span>Places © OpenStreetMap contributors via Photon · Photos from Wikipedia / Wikimedia Commons · Weather by Open-Meteo · FX by Frankfurter · <a href="https://github.com/veerefines/hive-sprite" target="_blank" rel="noopener">Source</a></span>
   </footer>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

@@ -2,6 +2,7 @@ import type { Issue, StopLike } from './lib/planCheck.ts'
 import type { DayWeather, Place } from './world.ts'
 import type { LegOption, LegMode } from './lib/legs.ts'
 import type { BudgetEstimate } from './lib/budget.ts'
+import type { Photo } from './photos.ts'
 
 export type Pace = 'chill' | 'balanced' | 'packed'
 
@@ -27,6 +28,7 @@ export interface Stop extends StopLike {
   kind?: string
   note?: string
   tip?: string
+  photo?: Photo | null
 }
 
 export interface Stay {
@@ -36,6 +38,7 @@ export interface Stay {
   area?: string
   why?: string
   nightlyUsd?: number
+  photo?: Photo | null
 }
 
 export interface Leg {
@@ -95,8 +98,10 @@ export interface Trip {
   legs: Leg[]
   budget?: BudgetEstimate & { cashUsd?: number }
   money?: Money
-  ideas: Record<string, Place[]>
-  rainyBackups: Place[]
+  ideas: Record<string, Array<Place & { photo?: Photo | null }>>
+  rainyBackups: Array<Place & { photo?: Photo | null }>
+  cover?: Photo | null
+  packing?: PackItem[]
   /** Every place Hive found while researching, keyed by name. */
   known: Record<string, Place>
   log: Array<{ step: number; tool: string; note: string }>
@@ -104,6 +109,14 @@ export interface Trip {
   proposals: Proposal[]
   forecastCheckedAt?: string
   shared?: { channel: string; ok: boolean; error?: string }
+}
+
+export interface PackItem {
+  id: string
+  label: string
+  group: string
+  why?: string
+  done: boolean
 }
 
 export type { LegMode }

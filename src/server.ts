@@ -6,9 +6,11 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { gatewayLlm, slackPost, type Llm } from './connectors.ts'
+import { gatewayLlm, modelChain, slackPost, type Llm } from './connectors.ts'
+import { configFromEnv, Limiter, politeFetch, QuotaError } from './limits.ts'
+import { photoForDestination } from './photos.ts'
 import { checkTrip, formatForSlack, reviseTrip, runHive, type Profile } from './agent.ts'
-import { computeBudget, computeIdeas, computeLegs, computeMoney, toIcs, type Router } from './enrich.ts'
+import { computeBudget, computeIdeas, computeLegs, computeMoney, computePacking, computePhotos, toIcs, type Router } from './enrich.ts'
 import { routeBetween } from './lib/routing.ts'
 import { countryFor } from './lib/money.ts'
 import { forecast, geocode } from './world.ts'
@@ -102,6 +104,7 @@ async function listTrips() {
       endDate: t.request.endDate,
       stops: t.stops.length,
       totalUsd: t.budget?.totalUsd,
+      cover: t.cover ?? null,
     }))
 }
 
@@ -129,23 +132,40 @@ export async function enrich(trip: Trip, route: Router = routeBetween, f: typeof
   const index = countryFor(trip.center?.address ?? trip.request.destination)?.index ?? 1
   trip.legs = await computeLegs(trip, route, index)
   trip.budget = computeBudget(trip, trip.originPoint ?? null)
+  const prevIdeas = new Map([...trip.rainyBackups ?? [], ...Object.values(trip.ideas ?? {}).flat()].map((p) => [p.name, p.photo]))
   Object.assign(trip, computeIdeas(trip))
+  for (const p of [...trip.rainyBackups, ...Object.values(trip.ideas).flat()]) if (prevIdeas.has(p.name)) p.photo = prevIdeas.get(p.name)
+  await computePhotos(trip, f).catch(() => {})
+  trip.packing = computePacking(trip, trip.packing)
   return trip
 }
 
-// ---------- quotas ----------
+// ---------- guardrails ----------
 
-const LIMITS = { plan: Number(process.env.HIVE_DAILY_LIMIT ?? 40), chat: Number(process.env.HIVE_DAILY_CHAT_LIMIT ?? 150) }
-const usage = { day: '', plan: 0, chat: 0 }
-export function takeQuota(now = new Date(), kind: 'plan' | 'chat' = 'plan'): boolean {
-  const day = now.toISOString().slice(0, 10)
-  if (usage.day !== day) Object.assign(usage, { day, plan: 0, chat: 0 })
-  if (usage[kind] >= LIMITS[kind]) return false
-  usage[kind]++
+export function clientIp(req: IncomingMessage): string {
+  const h = req.headers
+  const fwd = String(h['fly-client-ip'] ?? h['x-forwarded-for'] ?? '').split(',')[0].trim()
+  return (fwd || req.socket.remoteAddress || 'unknown').slice(0, 64)
+}
+
+/** Per-visitor request cap on the API: a token bucket, 90 requests a minute. */
+const buckets = new Map<string, { tokens: number; at: number }>()
+export function allowRequest(ip: string, now = Date.now(), rate = 90): boolean {
+  const b = buckets.get(ip) ?? { tokens: rate, at: now }
+  b.tokens = Math.min(rate, b.tokens + ((now - b.at) / 60_000) * rate)
+  b.at = now
+  if (buckets.size > 5000) buckets.clear()
+  buckets.set(ip, b)
+  if (b.tokens < 1) return false
+  b.tokens -= 1
   return true
 }
-function left(kind: 'plan' | 'chat') {
-  return Math.max(0, LIMITS[kind] - (usage.day === new Date().toISOString().slice(0, 10) ? usage[kind] : 0))
+
+function quota(res: ServerResponse, err: unknown): boolean {
+  if (!(err instanceof QuotaError)) return false
+  res.writeHead(429, { 'content-type': 'application/json', 'retry-after': String(err.retryAfterSec) })
+  res.end(JSON.stringify({ error: err.message, retryAfterSec: err.retryAfterSec }))
+  return true
 }
 
 // ---------- server ----------
@@ -161,11 +181,22 @@ function ndjson(res: ServerResponse) {
   return (obj: unknown) => res.write(JSON.stringify(obj) + '\n')
 }
 
-export function makeServer(llmFactory: () => Llm = () => gatewayLlm(), route: Router = routeBetween, f: typeof fetch = fetch) {
+export function makeServer(
+  llmFactory?: () => Llm,
+  route: Router = routeBetween,
+  f: typeof fetch = politeFetch(),
+  limiter: Limiter = new Limiter(configFromEnv(), join(DATA, 'limits.json')),
+) {
+  const makeLlm = llmFactory ?? (() => gatewayLlm(undefined, undefined, fetch, undefined, () => limiter.llmCall()))
   return createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://local')
     const p = url.pathname
+    const ip = clientIp(req)
     try {
+      if (p.startsWith('/api/') && !allowRequest(ip)) {
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '30' })
+        return res.end(JSON.stringify({ error: 'Too many requests. Slow down a little.' }))
+      }
       const file = STATIC[p] ?? (/^\/t\/[\w-]{1,40}$/.test(p) ? 'index.html' : undefined)
       if (req.method === 'GET' && file) {
         const content = await readFile(join(PUBLIC, file))
@@ -177,10 +208,9 @@ export function makeServer(llmFactory: () => Llm = () => gatewayLlm(), route: Ro
           ok: true,
           llmConnector: !!process.env.HIVE_LLM_GATEWAY,
           slackConnector: !!process.env.HIVE_SLACK_GATEWAY,
-          model: process.env.HIVE_MODEL ?? 'openai/gpt-4.1-mini',
+          models: modelChain(),
           host: process.env.SPRITE_NAME ?? 'local',
-          plansLeftToday: left('plan'),
-          chatsLeftToday: left('chat'),
+          ...limiter.status(ip),
         })
       }
       if (p === '/api/profile') {
@@ -202,8 +232,14 @@ export function makeServer(llmFactory: () => Llm = () => gatewayLlm(), route: Ro
         }
       }
       if (req.method === 'GET' && p === '/api/trips') return json(res, 200, await listTrips())
+      if (req.method === 'GET' && p === '/api/cover') {
+        const q = String(url.searchParams.get('q') ?? '').trim().slice(0, 80)
+        if (!q) return json(res, 400, { error: 'q required' })
+        res.setHeader('cache-control', 'public, max-age=86400')
+        return json(res, 200, (await photoForDestination(q, f)) ?? {})
+      }
 
-      const m = /^\/api\/trips\/([\w-]{1,40})(?:\/(chat|recheck|share|calendar\.ics|proposals\/([\w-]{1,40})\/(accept|reject)))?$/.exec(p)
+      const m = /^\/api\/trips\/([\w-]{1,40})(?:\/(chat|recheck|share|packing|calendar\.ics|proposals\/([\w-]{1,40})\/(accept|reject)))?$/.exec(p)
       if (m) {
         const [, id, action, pid, verdict] = m
         const trip = await loadTrip(id)
@@ -223,6 +259,15 @@ export function makeServer(llmFactory: () => Llm = () => gatewayLlm(), route: Ro
           trip.shared = { channel, ...r }
           await saveTrip(trip)
           return json(res, r.ok ? 200 : 502, trip.shared)
+        }
+
+        if (req.method === 'POST' && action === 'packing') {
+          const { id: itemId } = (await body(req)) as { id?: string }
+          const item = trip.packing?.find((x) => x.id === itemId)
+          if (!item) return json(res, 404, { error: 'item not found' })
+          item.done = !item.done
+          await saveTrip(trip)
+          return json(res, 200, { packing: trip.packing })
         }
 
         if (req.method === 'POST' && action === 'recheck') {
@@ -265,17 +310,22 @@ export function makeServer(llmFactory: () => Llm = () => gatewayLlm(), route: Ro
           const text = String(message ?? '').trim().slice(0, 600)
           if (!text) return json(res, 400, { error: 'message required' })
           if (busyTrips.has(trip.id)) return json(res, 429, { error: 'Hive is still working on this trip.' })
-          if (!takeQuota(new Date(), 'chat')) return json(res, 429, { error: 'Hive has used its chat quota for today.' })
+          try {
+            limiter.take('chat', ip)
+          } catch (err) {
+            if (quota(res, err)) return
+            throw err
+          }
           busyTrips.add(trip.id)
           const send = ndjson(res)
           try {
             for (const prop of trip.proposals) if (prop.status === 'open') prop.status = 'stale'
             const profile = await loadProfile()
             const { reply, proposal } = await reviseTrip(trip, text, {
-              llm: llmFactory(),
+              llm: makeLlm(),
               fetch: f,
               profile,
-              maxSteps: 12,
+              maxSteps: 6,
               remember: async (patch) => void (await mergeProfile(patch)),
               onStep: (e) => send({ type: 'step', ...e }),
             })
@@ -288,7 +338,7 @@ export function makeServer(llmFactory: () => Llm = () => gatewayLlm(), route: Ro
             await saveTrip(trip)
             send({ type: 'done', trip })
           } catch (err) {
-            send({ type: 'error', error: (err as Error).message })
+            send({ type: 'error', error: (err as Error).message, quota: err instanceof QuotaError })
           } finally {
             busyTrips.delete(trip.id)
             res.end()
@@ -300,19 +350,24 @@ export function makeServer(llmFactory: () => Llm = () => gatewayLlm(), route: Ro
       if (req.method === 'POST' && p === '/api/plan') {
         const parsed = validate(await body(req))
         if (typeof parsed === 'string') return json(res, 400, { error: parsed })
-        if (running >= 2) return json(res, 429, { error: 'Hive is busy with two trips already, try again in a minute.' })
-        if (!takeQuota(new Date(), 'plan')) return json(res, 429, { error: 'Hive has planned its daily quota of trips. Past trips are still browsable.' })
+        if (running >= 1) return json(res, 429, { error: 'Hive is planning another trip right now. Try again in a minute.' })
+        try {
+          limiter.take('plan', ip)
+        } catch (err) {
+          if (quota(res, err)) return
+          throw err
+        }
         running++
         const send = ndjson(res)
         try {
           const profile = await loadProfile()
-          const trip = await runHive(parsed, { llm: llmFactory(), fetch: f, profile, onStep: (e) => send({ type: 'step', ...e }) })
-          send({ type: 'step', step: 98, tool: 'enrich', note: 'Routing between stops, pricing the trip, collecting extra ideas' })
+          const trip = await runHive(parsed, { llm: makeLlm(), fetch: f, profile, maxSteps: 10, onStep: (e) => send({ type: 'step', ...e }) })
+          send({ type: 'step', step: 98, tool: 'enrich', note: 'Routing between stops, pricing the trip, finding photos, packing list' })
           await enrich(trip, route, f)
           await saveTrip(trip)
           send({ type: 'done', trip })
         } catch (err) {
-          send({ type: 'error', error: (err as Error).message })
+          send({ type: 'error', error: (err as Error).message, quota: err instanceof QuotaError })
         } finally {
           running--
           res.end()

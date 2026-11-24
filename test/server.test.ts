@@ -8,7 +8,9 @@ import { D1, call, fakeFetch, fakeRoute, goodDay1, s, scripted } from './fakes.t
 
 const dir = mkdtempSync(join(tmpdir(), 'hive-'))
 process.env.HIVE_DATA_DIR = dir
-const { makeServer, validate, takeQuota } = await import('../src/server.ts')
+const { makeServer, validate } = await import('../src/server.ts')
+const { Limiter } = await import('../src/limits.ts')
+const roomy = new Limiter({ llmCallsPerDay: 999, plansPerDay: 99, chatsPerDay: 99, ipPlansPerHour: 99, ipPlansPerDay: 99, ipChatsPerHour: 99, ipChatsPerDay: 99 })
 
 const stay = { place: 'Hotel Lisboa Centro', nightlyUsd: 140, why: 'Central' }
 const research = ['restaurant', 'bakery', 'viewpoint', 'attraction', 'hotel'].map((k, i) => call(`r${i}`, 'find_places', { lat: 38.72, lng: -9.14, kind: k }))
@@ -17,7 +19,7 @@ let script = scripted([])
 let server: Server
 let base = ''
 before(async () => {
-  server = makeServer(() => script.llm, fakeRoute, fakeFetch)
+  server = makeServer(() => script.llm, fakeRoute, fakeFetch, roomy)
   await new Promise<void>((r) => server.listen(0, r))
   base = `http://127.0.0.1:${(server.address() as { port: number }).port}`
 })
@@ -93,9 +95,29 @@ test('validation and quotas', () => {
   assert.equal(typeof validate({ destination: '', startDate: '2026-12-01', endDate: '2026-12-01' }), 'string')
   const ok = validate({ destination: 'Rome', startDate: '2026-12-01', endDate: '2026-12-02', slackChannel: 'bad channel!', travellers: 99 })
   assert.ok(typeof ok === 'object' && ok.slackChannel === undefined && ok.travellers === 12)
-  const d = new Date('2030-01-01T10:00:00Z')
-  let n = 0
-  while (takeQuota(d)) n++
-  assert.equal(n, 40)
-  assert.equal(takeQuota(new Date('2030-01-02T00:01:00Z')), true)
+})
+
+test('packing list: forecast-aware and toggles persist', async () => {
+  const list = await (await fetch(`${base}/api/trips`)).json()
+  const trip = await (await fetch(`${base}/api/trips/${list[0].id}`)).json()
+  const labels = trip.packing.map((x: { label: string }) => x.label)
+  assert.ok(labels.includes('Passport / ID'))
+  assert.ok(labels.includes('Plug adapter'), 'abroad: EUR vs USD')
+  assert.ok(labels.some((l: string) => /Rain jacket/.test(l)) === false, 'D1 is dry')
+  const r = await (await fetch(`${base}/api/trips/${trip.id}/packing`, { method: 'POST', body: JSON.stringify({ id: 'p0' }) })).json()
+  assert.equal(r.packing[0].done, true)
+})
+
+test('a visitor over the limit gets a 429 with Retry-After, and the trip is untouched', async () => {
+  const tight = new Limiter({ llmCallsPerDay: 999, plansPerDay: 99, chatsPerDay: 99, ipPlansPerHour: 0, ipPlansPerDay: 99, ipChatsPerHour: 99, ipChatsPerDay: 99 })
+  const s2 = makeServer(() => script.llm, fakeRoute, fakeFetch, tight)
+  await new Promise<void>((r) => s2.listen(0, r))
+  const b2 = `http://127.0.0.1:${(s2.address() as { port: number }).port}`
+  const res = await fetch(`${b2}/api/plan`, { method: 'POST', body: JSON.stringify({ destination: 'Lisbon', startDate: D1, endDate: D1 }) })
+  assert.equal(res.status, 429)
+  assert.ok(Number(res.headers.get('retry-after')) > 0)
+  assert.match((await res.json()).error, /per hour/)
+  const h = await (await fetch(`${b2}/api/health`)).json()
+  assert.equal(h.plansLeft, 0)
+  s2.close()
 })

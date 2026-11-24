@@ -10,7 +10,7 @@ import { estimateTrip, cashToCarryUsd } from './lib/budget.ts'
 import { countryFor, FALLBACK_USD_RATES } from './lib/money.ts'
 import { haversineKm, type LatLng } from './lib/geo.ts'
 import { sortDay, groupByDate, toMinutes } from './lib/planCheck.ts'
-import type { Leg, Money, Stop, Trip, TripRequest } from './types.ts'
+import type { Leg, Money, PackItem, Stop, Trip, TripRequest } from './types.ts'
 import type { Place } from './world.ts'
 
 export type Router = (profile: RouteProfile, a: LatLng, b: LatLng) => Promise<RoutedPath | null>
@@ -169,4 +169,47 @@ export function toIcs(trip: Trip): string {
   }
   lines.push('END:VCALENDAR')
   return lines.join('\r\n') + '\r\n'
+}
+
+/** Packing list from the forecast, the plan and the trip length. Deterministic. */
+export function computePacking(trip: Trip, previous: PackItem[] = []): PackItem[] {
+  const r = trip.request
+  const days = tripDays(r)
+  const wx = Object.entries(trip.forecast).filter(([d]) => d >= r.startDate && d <= r.endDate).map(([, w]) => w)
+  const rainy = wx.some((w) => w.rain)
+  const cold = wx.length ? Math.min(...wx.map((w) => w.min)) : null
+  const hot = wx.length ? Math.max(...wx.map((w) => w.max)) : null
+  const walkKm = trip.legs.filter((l) => l.best.mode === 'walk').reduce((s, l) => s + l.best.km, 0)
+  const abroad = !!trip.money && trip.money.currency !== trip.money.homeCurrency
+  const items: Array<[string, string, string?]> = [
+    ['Passport / ID', 'Documents'],
+    ...(abroad ? ([['Card with no foreign transaction fees', 'Money', `Paying in ${trip.money!.currency}`]] as Array<[string, string, string]>) : []),
+    ...(trip.budget?.cashUsd ? ([[`About ${Math.round((trip.budget.cashUsd * (trip.money?.rates[trip.money.currency] ?? 1)) / 10) * 10} ${trip.money?.currency ?? 'USD'} in cash`, 'Money', 'Hive’s cash estimate']] as Array<[string, string, string]>) : []),
+    ['Phone + charger', 'Tech'],
+    ...(abroad ? ([['Plug adapter', 'Tech']] as Array<[string, string]>) : []),
+    ['Power bank', 'Tech', walkKm > 4 ? `${walkKm.toFixed(1)} km on foot planned` : undefined],
+    ['Comfortable walking shoes', 'Clothes', walkKm > 2 ? `${walkKm.toFixed(1)} km of walking legs` : undefined],
+    [`${Math.min(days, 7)} days of clothes`, 'Clothes'],
+    ...(rainy ? ([['Rain jacket or umbrella', 'Clothes', 'Rain in the forecast']] as Array<[string, string, string]>) : []),
+    ...(cold != null && cold <= 10 ? ([['Warm layer', 'Clothes', `Lows of ${cold}°C`]] as Array<[string, string, string]>) : []),
+    ...(hot != null && hot >= 26 ? ([['Sunscreen + hat', 'Clothes', `Highs of ${hot}°C`]] as Array<[string, string, string]>) : []),
+    ...(trip.stops.some((s) => s.category === 'nightlife') ? ([['One nicer outfit', 'Clothes', 'Evening plans']] as Array<[string, string, string]>) : []),
+    ...(trip.stops.some((s) => s.outdoor) ? ([['Reusable water bottle', 'Day bag']] as Array<[string, string]>) : []),
+    ['Toiletries + meds', 'Day bag'],
+    ...(r.diet ? ([[`Snacks that fit your diet (${r.diet})`, 'Day bag']] as Array<[string, string]>) : []),
+  ]
+  const done = new Map(previous.map((p) => [p.label, p.done]))
+  return items.map(([label, group, why], i) => ({ id: `p${i}`, label, group, why, done: done.get(label) ?? false }))
+}
+
+/** Photos for the cover, stay, stops and ideas (Wikipedia/Commons, matched conservatively). */
+export async function computePhotos(trip: Trip, f: typeof fetch = fetch): Promise<void> {
+  const { photoForDestination, photoForPlace, mapLimit } = await import('./photos.ts')
+  if (trip.cover === undefined) trip.cover = (await photoForDestination(trip.request.destination, f)) ?? (trip.center ? await photoForDestination(trip.center.name, f) : null)
+  const targets: Array<{ name: string; lat: number; lng: number; kind?: string; set: (p: import('./photos.ts').Photo | null) => void }> = []
+  for (const s of trip.stops) if (typeof s.lat === 'number' && s.photo === undefined) targets.push({ name: s.place ?? s.title, lat: s.lat, lng: s.lng!, kind: s.kind, set: (p) => (s.photo = p) })
+  if (trip.stay && trip.stay.photo === undefined) targets.push({ name: trip.stay.name, lat: trip.stay.lat, lng: trip.stay.lng, kind: 'hotel', set: (p) => (trip.stay!.photo = p) })
+  const ideaList = [...trip.rainyBackups, ...Object.values(trip.ideas).flatMap((l) => l.slice(0, 4))]
+  for (const p of ideaList) if (p.photo === undefined) targets.push({ ...p, set: (ph) => (p.photo = ph) })
+  await mapLimit(targets.slice(0, 45), 4, async (t) => t.set(await photoForPlace(t, f)))
 }

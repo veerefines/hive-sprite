@@ -133,7 +133,7 @@ test('find_places: Photon reverse without keyword, search with keyword, dedupe a
 test('gateway LLM: connector URL, no Authorization header, token cap', async () => {
   let url = ''
   let init: RequestInit = {}
-  const llm = gatewayLlm('https://api.sprites.dev/v1/gateway/openrouter/conn_x/v1/', 'm', (async (u: string, i: RequestInit) => {
+  const llm = gatewayLlm('https://api.sprites.dev/v1/gateway/openrouter/conn_x/v1/', 'm:free', (async (u: string, i: RequestInit) => {
     url = u
     init = i
     return new Response(JSON.stringify({ choices: [{ message: { content: 'hi' } }] }))

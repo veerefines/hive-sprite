@@ -45,26 +45,62 @@ function trimSlash(s: string): string {
  * OpenAI-compatible) connector. Base URL example:
  *   https://api.sprites.dev/v1/gateway/openrouter/conn_abc123/v1
  */
+export const FREE_MODELS = [
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'nvidia/nemotron-3.5-super-vl:free',
+  'google/gemma-4-31b-it:free',
+  'inclusionai/ling-3.2-flash:free',
+]
+
+export function modelChain(env = process.env): string[] {
+  const list = (env.HIVE_MODELS ?? env.HIVE_MODEL ?? '').split(',').map((m) => m.trim()).filter(Boolean)
+  const chain = list.length ? list : FREE_MODELS
+  // Free tier only unless explicitly allowed: paid model ids are dropped.
+  return env.HIVE_ALLOW_PAID === '1' ? chain : chain.filter((m) => m.endsWith(':free'))
+}
+
+/**
+ * OpenAI-compatible chat completions through the OpenRouter connector.
+ * Tries each model in the chain; a 429/5xx (free models get rate-limited
+ * upstream) moves on to the next one. Every attempt is reported to onCall
+ * first, so the caller can count it against the day's allowance.
+ */
 export function gatewayLlm(
   base = process.env.HIVE_LLM_GATEWAY ?? '',
-  model = process.env.HIVE_MODEL ?? 'openai/gpt-4.1-mini',
+  models: string | string[] = modelChain(),
   fetchImpl: typeof fetch = fetch,
   maxTokens = Number(process.env.HIVE_MAX_TOKENS ?? 6000),
+  onCall: (model: string) => void = () => {},
 ): Llm {
   if (!base) throw new Error('HIVE_LLM_GATEWAY is not set: point it at your LLM connector URL')
+  const chain = Array.isArray(models) ? models : [models]
+  if (!chain.length) throw new Error('No allowed models (free tier only: set HIVE_MODELS to ids ending in :free)')
+  let preferred = 0
   return async (messages, tools) => {
-    const body = JSON.stringify({ model, messages, tools, tool_choice: 'auto', temperature: 0.3, max_tokens: maxTokens })
-    let res: Response | undefined
-    for (let attempt = 0; attempt < 2; attempt++) {
-      res = await fetchImpl(`${trimSlash(base)}/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json' }, body })
-      if (res.ok || (res.status !== 429 && res.status < 500)) break
-      await new Promise((r) => setTimeout(r, 1500))
+    let lastErr = ''
+    for (let k = 0; k < chain.length; k++) {
+      const i = (preferred + k) % chain.length
+      const model = chain[i]
+      onCall(model)
+      const res = await fetchImpl(`${trimSlash(base)}/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ model, messages, tools, tool_choice: 'auto', temperature: 0.3, max_tokens: maxTokens }),
+      })
+      if (res.ok) {
+        const data = (await res.json()) as { choices?: Array<{ message?: LlmReply }>; error?: { message?: string } }
+        const msg = data.choices?.[0]?.message
+        if (msg) {
+          preferred = i // stick with a model that answers
+          return { content: msg.content ?? null, tool_calls: msg.tool_calls }
+        }
+        lastErr = data.error?.message ?? 'no message'
+        continue
+      }
+      lastErr = `${res.status}: ${(await res.text()).slice(0, 200)}`
+      if (res.status !== 429 && res.status < 500) break
     }
-    if (!res!.ok) throw new Error(`LLM connector ${res!.status}: ${(await res!.text()).slice(0, 300)}`)
-    const data = (await res!.json()) as { choices?: Array<{ message?: LlmReply }> }
-    const msg = data.choices?.[0]?.message
-    if (!msg) throw new Error('LLM connector returned no message')
-    return { content: msg.content ?? null, tool_calls: msg.tool_calls }
+    throw new Error(`LLM connector failed (${lastErr})`)
   }
 }
 
