@@ -60,7 +60,7 @@ export async function photoForPlace(
   const url =
     'https://en.wikipedia.org/w/api.php?action=query&format=json&formatversion=2&generator=geosearch' +
     `&ggscoord=${place.lat.toFixed(5)}%7C${place.lng.toFixed(5)}&ggsradius=600&ggslimit=12` +
-    '&prop=pageimages%7Ccoordinates&piprop=thumbnail&pithumbsize=640&pilimit=12&origin=*'
+    '&prop=pageimages%7Ccoordinates&piprop=thumbnail&pithumbsize=500&pilimit=12&origin=*'
   try {
     const res = await f(url, { headers: { 'user-agent': UA } })
     if (!res.ok) return null
@@ -85,10 +85,11 @@ export async function photoForDestination(name: string, f: typeof fetch = fetch)
     if (!res.ok) return null
     const d = (await res.json()) as { type?: string; title?: string; originalimage?: { source: string; width: number }; thumbnail?: { source: string }; content_urls?: { desktop?: { page?: string } } }
     if (d.type === 'disambiguation') return null
-    // Prefer a ~1600px rendition of the original over a tiny thumbnail.
-    const src = d.thumbnail?.source?.replace(/\/\d+px-/, '/1600px-') ?? d.originalimage?.source
+    // Wikimedia only serves standard thumbnail widths (330, 500, 960, 1280, 1920, 3840).
+    const width = d.originalimage?.width ?? 0
+    const src = width >= 1280 ? d.thumbnail?.source?.replace(/\/\d+px-/, '/1280px-') : (d.originalimage?.source ?? d.thumbnail?.source)
     if (!src) return null
-    return { url: d.originalimage && d.originalimage.width < 1600 ? d.originalimage.source : src, page: d.content_urls?.desktop?.page ?? '', title: d.title ?? title }
+    return { url: src, page: d.content_urls?.desktop?.page ?? '', title: d.title ?? title }
   } catch {
     return null
   }
