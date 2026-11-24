@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Hive · a trip agent on a Fly Sprite</title>
+  <link rel="stylesheet" href="/style.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+  <header>
+    <div class="brand"><span class="hex">⬢</span> Hive</div>
+    <p class="tag">A trip agent that lives on a <b>Fly.io Sprite</b>. It researches real places, drafts a plan, lets the Plan Doctor tear it apart, and fixes it until it holds up.</p>
+    <div id="health" class="health"></div>
+  </header>
+
+  <main>
+    <form id="form" class="card">
+      <label>Where to?<input name="destination" required placeholder="Lisbon" /></label>
+      <div class="row">
+        <label>From<input type="date" name="startDate" required /></label>
+        <label>To<input type="date" name="endDate" required /></label>
+      </div>
+      <div class="row">
+        <label>Pace
+          <select name="pace"><option>chill</option><option selected>balanced</option><option>packed</option></select>
+        </label>
+        <label>Budget / day ($)<input type="number" name="dailyBudget" min="0" placeholder="120" /></label>
+        <label>Wake up<input type="time" name="wakeTime" value="08:00" /></label>
+      </div>
+      <label>Anything else?<textarea name="prompt" rows="2" placeholder="Seafood, one viewpoint at sunset, no museums on day 1"></textarea></label>
+      <label>Share to Slack channel (optional)<input name="slackChannel" placeholder="#trip-planning" /></label>
+      <button type="submit">Ask Hive</button>
+    </form>
+
+    <section id="live" class="card hidden">
+      <h2>Hive is working</h2>
+      <ol id="steps"></ol>
+    </section>
+
+    <section id="result" class="hidden">
+      <div class="card"><h2 id="r-title"></h2><p id="r-summary"></p><div id="r-issues"></div></div>
+      <div id="map"></div>
+      <div id="days"></div>
+    </section>
+
+    <section class="card">
+      <h2>Past trips on this Sprite</h2>
+      <ul id="trips"></ul>
+    </section>
+  </main>
+
+  <footer>Built for Fly.io Hacksgiving 2026 · LLM and Slack calls go through Sprites connectors, so no API keys live on this machine.</footer>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+{
+  "name": "hive-sprite",
+  "version": "0.1.0",
+  "description": "Hive: a trip-planning agent that lives on a Fly.io Sprite and talks to its LLM and Slack through Sprites connectors.",
+  "type": "module",
+  "license": "MIT",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node src/server.ts",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
+  }
+}
