@@ -75,6 +75,8 @@ test('photos are only used when they really show the place', () => {
   ]
   assert.equal(pickPhoto({ name: 'Castelo de São Jorge', lat: 38.7138, lng: -9.1336, kind: 'attraction' }, pages)?.url, 'castle.jpg')
   assert.equal(pickPhoto({ name: 'Taberna da Rua das Flores', lat: 38.7118, lng: -9.13, kind: 'restaurant' }, pages), null, 'no wrong photo for a restaurant')
+  const kyoto = [{ title: 'Kyoto Imperial Palace', lat: 35.0254, lng: 135.7621, thumb: 'kip.jpg' }]
+  assert.equal(pickPhoto({ name: 'Sento Imperial Palace', lat: 35.0205, lng: 135.7665, kind: 'attraction' }, kyoto), null, 'a neighbouring palace is not this palace')
 })
 
 test('API request bucket refills over time', async () => {

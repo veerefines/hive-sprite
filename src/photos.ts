@@ -46,7 +46,7 @@ export function pickPhoto(
     const m = nameMatch(place.name, p.title)
     const km = haversineKm(place, p)
     let score = 0
-    if (m >= 0.6 && km < 1.5) score = 2 + m
+    if ((m === 1 && km < 1.5) || (m >= 0.6 && km < 0.4)) score = 2 + m
     else if (LANDMARK.has(place.kind ?? '') && km < 0.06 && m >= 0.3) score = 1 + m
     if (score && (!best || score > best.score)) best = { p, score }
   }

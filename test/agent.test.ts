@@ -193,3 +193,21 @@ test('places are referred to by shortlist id, so foreign-script names never brea
   ensureIds(old)
   assert.deepEqual([old.x.id, old.y.id], ['P2', 'P1'])
 })
+
+test('repeats are repaired in code with the nearest unused place of the same kind', async () => {
+  const { repairRepeats } = await import('../src/agent.ts')
+  const known = {
+    A: { name: 'A', lat: 35.0, lng: 135.0, kind: 'restaurant', id: 'P1' },
+    B: { name: 'B', lat: 35.001, lng: 135.0, kind: 'restaurant', id: 'P2' },
+    C: { name: 'C', lat: 35.05, lng: 135.0, kind: 'restaurant', id: 'P3' },
+    M: { name: 'M', lat: 35.0, lng: 135.0, kind: 'museum', id: 'P4' },
+  }
+  const stops = [
+    { id: '1', date: D1, start: '12:00', title: 'Lunch at A', place: 'A', lat: 35.0, lng: 135.0, category: 'food' },
+    { id: '2', date: '2026-12-02', start: '19:00', title: 'Dinner at A', place: 'A', lat: 35.0, lng: 135.0, category: 'food' },
+  ]
+  assert.equal(repairRepeats(stops, known), 1)
+  assert.equal(stops[0].place, 'A')
+  assert.equal(stops[1].place, 'B', 'nearest unused restaurant, not the museum')
+  assert.equal(stops[1].title, 'Dinner at B')
+})

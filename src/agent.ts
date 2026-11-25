@@ -253,16 +253,24 @@ function issue(date: string, severity: Issue['severity'], message: string, stopI
 }
 
 /** Hive's own checks on top of the Plan Doctor. */
-export function requestChecks(req: TripRequest, stops: Stop[], weather: Record<string, DayWeather>, unresolved: Stop[] = []): Issue[] {
+export function requestChecks(req: TripRequest, stops: Stop[], weather: Record<string, DayWeather>, unresolved: Stop[] = [], known: Record<string, Place> = {}): Issue[] {
   const issues: Issue[] = []
   for (const s of unresolved) {
     issues.push(issue(s.date, 'error', `"${s.place ?? s.title}" is not on the shortlist. Set "place" to a shortlist ID like "P7".`, [s.id]))
   }
   const seen = new Map<string, string>()
+  const usedNames = new Set(stops.map((s) => s.place ?? s.title))
   for (const s of stops) {
     const k = norm(s.place ?? s.title)
-    if (seen.has(k)) issues.push(issue(s.date, 'error', `"${s.place ?? s.title}" is used twice (also on ${seen.get(k)}). Pick a different place.`, [s.id]))
-    else seen.set(k, s.date)
+    if (seen.has(k)) {
+      const id = known[s.place ?? '']?.id
+      const kind = known[s.place ?? '']?.kind
+      const alts = Object.values(known)
+        .filter((p) => p.kind === kind && !usedNames.has(p.name))
+        .slice(0, 3)
+        .map((p) => `${p.id} ${p.name}`)
+      issues.push(issue(s.date, 'error', `"${s.place ?? s.title}"${id ? ` (${id})` : ''} is used twice (also on ${seen.get(k)}). Replace the ${s.date} ${s.start ?? ''} one${alts.length ? ` with one of: ${alts.join(', ')}` : ''}.`, [s.id]))
+    } else seen.set(k, s.date)
   }
   if (/sunset/i.test(req.prompt)) {
     const near = stops.filter((s) => {
@@ -306,6 +314,34 @@ interface Draft {
   issues: Issue[]
 }
 
+/**
+ * Deterministic repair for repeats: the second use of a place is swapped for
+ * the nearest unused place of the same kind. Saves the model a round trip.
+ */
+export function repairRepeats(stops: Stop[], known: Record<string, Place>): number {
+  const used = new Set<string>()
+  let fixed = 0
+  for (const s of [...stops].sort((a, b) => `${a.date}${a.start}`.localeCompare(`${b.date}${b.start}`))) {
+    const name = s.place ?? s.title
+    if (!used.has(name)) {
+      used.add(name)
+      continue
+    }
+    const here = known[name]
+    if (!here || typeof s.lat !== 'number') continue
+    const alt = Object.values(known)
+      .filter((p) => p.kind === here.kind && !used.has(p.name) && !stops.some((x) => x.place === p.name))
+      .sort((a, b) => haversineKm(here, a) - haversineKm(here, b))[0]
+    if (!alt) continue
+    s.title = s.title.includes(name) ? s.title.replace(name, alt.name) : `${s.title.split(' at ')[0]} at ${alt.name}`
+    Object.assign(s, { place: alt.name, lat: alt.lat, lng: alt.lng, address: alt.address, kind: alt.kind, photo: undefined })
+    s.note = `${s.note ? `${s.note} ` : ''}(Hive picked ${alt.name} so you don't repeat ${name}.)`.slice(0, 240)
+    used.add(alt.name)
+    fixed++
+  }
+  return fixed
+}
+
 function evaluate(raw: Record<string, unknown>, req: TripRequest, weather: Record<string, DayWeather>, known: Record<string, Place>): Draft {
   const list = Array.isArray(raw.stops) ? raw.stops : []
   const unresolved: Stop[] = []
@@ -331,6 +367,7 @@ function evaluate(raw: Record<string, unknown>, req: TripRequest, weather: Recor
       else unresolved.push(stop)
       return stop
     })
+  repairRepeats(stops, known)
   let stay: Stay | undefined
   const rs = raw.stay as Record<string, unknown> | undefined
   if (rs?.place) {
@@ -340,7 +377,7 @@ function evaluate(raw: Record<string, unknown>, req: TripRequest, weather: Recor
   const prefs: PrefLike[] = [{ userId: 'me', pace: req.pace ?? 'balanced', dailyBudget: req.dailyBudget, wakeTime: req.wakeTime }]
   const issues = [
     ...checkPlan({ startDate: req.startDate, endDate: req.endDate, forecast: weather }, stops, prefs),
-    ...requestChecks(req, stops, weather, unresolved),
+    ...requestChecks(req, stops, weather, unresolved, known),
   ]
   if (!stay) issues.push(issue(req.startDate, 'warn', rs?.place ? `Stay "${rs.place}" is not a hotel Hive found.` : 'No stay picked yet: find_places kind "hotel" and choose one.'))
   return {
@@ -640,5 +677,5 @@ export function formatForSlack(t: Trip): string {
 export function checkTrip(trip: Trip): Issue[] {
   const r = trip.request
   const prefs: PrefLike[] = [{ userId: 'me', pace: r.pace ?? 'balanced', dailyBudget: r.dailyBudget, wakeTime: r.wakeTime }]
-  return [...checkPlan({ startDate: r.startDate, endDate: r.endDate, forecast: trip.forecast }, trip.stops, prefs), ...requestChecks(r, trip.stops, trip.forecast)]
+  return [...checkPlan({ startDate: r.startDate, endDate: r.endDate, forecast: trip.forecast }, trip.stops, prefs), ...requestChecks(r, trip.stops, trip.forecast, [], trip.known)]
 }
