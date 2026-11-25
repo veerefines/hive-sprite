@@ -14,7 +14,7 @@ export interface Place {
 }
 
 export async function geocode(query: string, fetchImpl: typeof fetch = fetch): Promise<Place | null> {
-  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&limit=1&q=${encodeURIComponent(query)}`
+  const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&accept-language=en&limit=1&q=${encodeURIComponent(query)}`
   const res = await fetchImpl(url, { headers: { 'user-agent': UA } })
   if (!res.ok) return null
   const rows = (await res.json()) as Array<{ display_name: string; lat: string; lon: string; type: string }>
@@ -67,9 +67,9 @@ async function withTimeout(p: (signal: AbortSignal) => Promise<Response>, ms: nu
 async function photon(lat: number, lng: number, kind: string, keyword: string, radiusKm: number, f: typeof fetch): Promise<Place[]> {
   const [tag] = KINDS[kind] ?? KINDS.attraction
   const url = keyword
-    ? `https://photon.komoot.io/api/?lat=${lat}&lon=${lng}&limit=25&osm_tag=${tag}&q=${encodeURIComponent(keyword)}`
-    : `https://photon.komoot.io/reverse?lat=${lat}&lon=${lng}&limit=20&osm_tag=${tag}&radius=${Math.max(1, Math.round(radiusKm))}`
-  const res = await withTimeout((signal) => f(url, { headers: { 'user-agent': UA }, signal }), 8000)
+    ? `https://photon.komoot.io/api/?lang=en&lat=${lat}&lon=${lng}&limit=25&osm_tag=${tag}&q=${encodeURIComponent(keyword)}`
+    : `https://photon.komoot.io/reverse?lang=en&lat=${lat}&lon=${lng}&limit=20&osm_tag=${tag}&radius=${Math.max(1, Math.round(radiusKm))}`
+  const res = await withTimeout((signal) => f(url, { headers: { "user-agent": UA }, signal }), 20000)
   if (!res?.ok) return []
   const data = (await res.json()) as {
     features: Array<{ geometry: { coordinates: [number, number] }; properties: Record<string, string> }>

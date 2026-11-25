@@ -181,7 +181,7 @@ const CACHE_MS = 6 * 3600_000
 const CACHE_MAX = 800
 let inflight = 0
 const waiters: Array<() => void> = []
-const MAX_INFLIGHT = 6
+const MAX_INFLIGHT = 8
 
 async function slot(host: string) {
   if (inflight >= MAX_INFLIGHT) await new Promise<void>((r) => waiters.push(r))

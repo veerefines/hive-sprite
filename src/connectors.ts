@@ -82,11 +82,18 @@ export function gatewayLlm(
       const i = (preferred + k) % chain.length
       const model = chain[i]
       onCall(model)
-      const res = await fetchImpl(`${trimSlash(base)}/chat/completions`, {
+      let res: Response
+      try {
+        res = await fetchImpl(`${trimSlash(base)}/chat/completions`, {
         method: 'POST',
+        signal: AbortSignal.timeout(Number(process.env.HIVE_LLM_TIMEOUT_MS ?? 150_000)),
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ model, messages, ...(tools.length ? { tools, tool_choice: 'auto' } : {}), temperature: 0.3, max_tokens: maxTokens }),
-      })
+        })
+      } catch (err) {
+        lastErr = `${model} timed out`
+        continue
+      }
       if (res.ok) {
         const data = (await res.json()) as { choices?: Array<{ message?: LlmReply }>; error?: { message?: string } }
         const msg = data.choices?.[0]?.message

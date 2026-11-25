@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto'
 import { checkPlan, groupByDate, sortDay, toMinutes, type Issue, type PrefLike } from './lib/planCheck.ts'
 import { slackPost, type ChatMessage, type Llm, type ToolSpec } from './connectors.ts'
 import { findPlaces, forecast, geocode, PLACE_KINDS, type DayWeather, type Place } from './world.ts'
+import { haversineKm } from './lib/geo.ts'
 import type { Proposal, Stay, Stop, Trip, TripRequest } from './types.ts'
 
 export type { TripRequest } from './types.ts'
@@ -226,6 +227,21 @@ export function resolvePlace(name: string | undefined, known: Record<string, Pla
   return all.find((p) => norm(p.name) === n) ?? all.find((p) => norm(p.name).length > 3 && (n.includes(norm(p.name)) || norm(p.name).includes(n))) ?? null
 }
 
+/** A known place within 80 m of the given coordinates, if any. */
+export function nearestKnown(lat: unknown, lng: unknown, known: Record<string, Place>): Place | null {
+  if (typeof lat !== 'number' || typeof lng !== 'number') return null
+  let best: Place | null = null
+  let bestKm = 0.08
+  for (const p of Object.values(known)) {
+    const km = haversineKm({ lat, lng }, p)
+    if (km < bestKm) {
+      best = p
+      bestKm = km
+    }
+  }
+  return best
+}
+
 function issue(date: string, severity: Issue['severity'], message: string, stopIds: string[] = []): Issue {
   return { date, type: 'unverified' as Issue['type'], severity, message, stopIds }
 }
@@ -303,7 +319,8 @@ function evaluate(raw: Record<string, unknown>, req: TripRequest, weather: Recor
         note: s.note ? String(s.note).slice(0, 240) : undefined,
         tip: s.tip ? String(s.tip).slice(0, 240) : undefined,
       }
-      const hit = resolvePlace(stop.place ?? stop.title, known)
+      // By name first; then by location (a translated name with the shortlist's coordinates).
+      const hit = resolvePlace(stop.place ?? stop.title, known) ?? nearestKnown(s.lat, s.lng, known)
       if (hit) Object.assign(stop, { place: hit.name, lat: hit.lat, lng: hit.lng, address: hit.address, kind: hit.kind })
       else unresolved.push(stop)
       return stop
@@ -454,7 +471,8 @@ async function loop(
             draft = evaluate(args, ctx.req, ctx.weather, ctx.known)
             const errs = draft.issues.filter((i) => i.severity === 'error').length
             if (!best || errs < best.issues.filter((i) => i.severity === 'error').length) best = draft
-            note(step, 'propose_plan', `${draft.stops.length} stops · ${errs} error(s), ${draft.issues.length - errs} warning(s)`)
+            const firstErr = draft.issues.find((i) => i.severity === 'error')?.message
+            note(step, 'propose_plan', `${draft.stops.length} stops · ${errs} error(s), ${draft.issues.length - errs} warning(s)${firstErr ? ` · fixing: ${firstErr.slice(0, 90)}` : ''}`)
             result = report(draft.issues)
             break
           }

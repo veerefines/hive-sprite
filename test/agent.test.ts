@@ -172,3 +172,10 @@ test('free-tier economy: research runs in code, and a search-happy model is made
   assert.equal(trip.stops.length, 5)
   assert.ok(toolSets.length <= 5, `took ${toolSets.length} model calls`)
 })
+
+test('a translated name with the shortlist coordinates still grounds to the real place', async () => {
+  const known = { '祇園 一力': { name: '祇園 一力', lat: 35.0037, lng: 135.7751, kind: 'restaurant' } }
+  const { nearestKnown } = await import('../src/agent.ts')
+  assert.equal(nearestKnown(35.0038, 135.7752, known)?.name, '祇園 一力')
+  assert.equal(nearestKnown(35.02, 135.79, known), null)
+})
