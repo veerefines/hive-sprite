@@ -59,8 +59,8 @@ export async function photoForPlace(
 ): Promise<Photo | null> {
   const url =
     'https://en.wikipedia.org/w/api.php?action=query&format=json&formatversion=2&generator=geosearch' +
-    `&ggscoord=${place.lat.toFixed(5)}%7C${place.lng.toFixed(5)}&ggsradius=600&ggslimit=12` +
-    '&prop=pageimages%7Ccoordinates&piprop=thumbnail&pithumbsize=500&pilimit=12&origin=*'
+    `&ggscoord=${place.lat.toFixed(5)}%7C${place.lng.toFixed(5)}&ggsradius=1000&ggslimit=30` +
+    '&prop=pageimages%7Ccoordinates&piprop=thumbnail&pithumbsize=500&pilimit=30&origin=*'
   try {
     const res = await f(url, { headers: { 'user-agent': UA } })
     if (!res.ok) return null
