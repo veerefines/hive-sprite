@@ -176,7 +176,7 @@ export function computePacking(trip: Trip, previous: PackItem[] = []): PackItem[
   const r = trip.request
   const days = tripDays(r)
   const wx = Object.entries(trip.forecast).filter(([d]) => d >= r.startDate && d <= r.endDate).map(([, w]) => w)
-  const rainy = wx.some((w) => w.rain)
+  const rainy = wx.some((w) => w.rain || /rain|drizzle|shower|storm/.test(w.desc))
   const cold = wx.length ? Math.min(...wx.map((w) => w.min)) : null
   const hot = wx.length ? Math.max(...wx.map((w) => w.max)) : null
   const walkKm = trip.legs.filter((l) => l.best.mode === 'walk').reduce((s, l) => s + l.best.km, 0)
