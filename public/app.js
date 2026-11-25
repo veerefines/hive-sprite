@@ -499,7 +499,7 @@ function drawMap() {
   if (map) map.remove()
   map = L.map('map', { scrollWheelZoom: false, zoomControl: false })
   L.control.zoom({ position: 'topright' }).addTo(map)
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', { attribution: '© OpenStreetMap © CARTO', maxZoom: 19 }).addTo(map)
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap contributors', maxZoom: 19 }).addTo(map)
   const days = groupDays(trip.stops)
   const layers = []
   days.forEach(([date, stops], i) => {
