@@ -161,7 +161,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--honey); out
 .cover::after { content: ''; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(0,0,0,.28), transparent 32%, transparent 55%, rgba(0,0,0,.5)); pointer-events: none; }
 .cover .top-actions { position: absolute; top: 18px; right: 18px; z-index: 3; display: flex; gap: 8px; }
 .cover .credit { bottom: 104px; right: 18px; font-size: 11px; }
-.titlecard { position: relative; z-index: 4; margin: -96px auto 0; max-width: 1060px; padding: 24px 28px; display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; box-shadow: var(--sh-2); }
+.titlecard { position: relative; z-index: 4; margin: -96px auto 0; width: calc(100% - 96px); max-width: 1060px; padding: 24px 28px; display: grid; grid-template-columns: 1fr auto; gap: 18px; align-items: center; box-shadow: var(--sh-2); }
 .titlecard h1 { font-size: 38px; font-weight: 800; letter-spacing: -.035em; }
 .titlecard .meta { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
 .titlecard .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
@@ -215,7 +215,7 @@ input:focus, select:focus, textarea:focus { outline: 2px solid var(--honey); out
 .place .body { padding: 14px 18px; display: grid; gap: 6px; align-content: start; }
 .place .head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .place h4 { font-size: 17px; }
-.place .where { font-size: 12.5px; color: var(--mute); }
+.place .addr { font-size: 12.5px; color: var(--mute); }
 .place .note { font-size: 14px; color: var(--ink2); margin: 0; }
 .place .tip { font-size: 13px; background: var(--honey-soft); border-radius: 10px; padding: 6px 10px; justify-self: start; }
 .place .cost { margin-left: auto; font-weight: 800; }

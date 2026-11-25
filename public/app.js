@@ -31,6 +31,7 @@ const iso = (d) => d.toISOString().slice(0, 10)
 const addDays = (s, n) => iso(new Date(Date.parse(s) + n * 864e5))
 const fmtDay = (d, opts = { weekday: 'short', month: 'short', day: 'numeric' }) => new Date(`${d}T12:00:00`).toLocaleDateString('en', opts)
 const daysBetween = (a, b) => Math.round((Date.parse(b) - Date.parse(a)) / 864e5) + 1
+const wxIcon = (w) => (!w ? '🗓️' : w.rain || /rain|drizzle|shower|storm|snow/.test(w.desc) ? (/snow/.test(w.desc) ? '🌨️' : '🌧️') : /cloud|overcast|fog/.test(w.desc) ? '⛅' : '☀️')
 const toMin = (hhmm) => (hhmm ? Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5)) : 9999)
 function money(usd, cur, rates) {
   const r = rates?.[cur] ?? (cur === 'USD' ? 1 : null)
@@ -419,7 +420,7 @@ function overviewHtml() {
     <div style="margin-top:14px">${doctor}</div>
     <div class="two">
       ${trip.stay ? `<div class="card staycard lift" data-open="stay">${photo(trip.stay.photo, 'hotel')}<div class="body"><small class="muted" style="font-weight:800;letter-spacing:.06em">WHERE YOU'LL STAY</small><h3 style="font-size:20px">${esc(trip.stay.name)}</h3><div class="muted" style="font-size:13px">${esc(trip.stay.area ?? '')}</div>${trip.stay.why ? `<div style="font-size:14px">${esc(trip.stay.why)}</div>` : ''}${trip.stay.nightlyUsd ? `<b>${local(trip.stay.nightlyUsd)} <span class="muted" style="font-weight:600">/ night</span></b>` : ''}</div></div>` : '<div></div>'}
-      <div class="wxrow">${days.map(([d]) => { const w = trip.forecast?.[d]; return `<div class="card wx"><b>${esc(fmtDay(d, { weekday: 'short', day: 'numeric' }))}</b><div class="big">${w ? (w.rain ? '🌧️' : /cloud|overcast|fog/.test(w.desc) ? '⛅' : '☀️') : '🗓️'}</div><span>${w ? `${w.min}–${w.max}°C` : 'too far out'}</span>${w?.sunset ? `<span>🌅 ${w.sunset}</span>` : ''}</div>` }).join('')}</div>
+      <div class="wxrow">${days.map(([d]) => { const w = trip.forecast?.[d]; return `<div class="card wx"><b>${esc(fmtDay(d, { weekday: 'short', day: 'numeric' }))}</b><div class="big">${wxIcon(w)}</div><span>${w ? `${w.min}–${w.max}°C` : 'too far out'}</span>${w?.sunset ? `<span>🌅 ${w.sunset}</span>` : ''}</div>` }).join('')}</div>
     </div>
     <div class="section-h" style="margin-top:28px"><h2>Day by day</h2><span class="muted">Tap a day to open it</span></div>
     <div class="rail">${days.map(([d, stops], i) => { const pics = stops.filter((s) => s.photo?.url); const first = [...pics, ...stops].slice(0, 3); while (first.length < 3) first.push(stops[0] ?? {}); return `<button class="card daycard lift" data-day="${d}"><div class="mosaic">${first.map((s) => photo(s.photo, s.kind ?? s.category)).join('')}</div><div class="body"><span class="tag" style="background:${DAY_COLORS[i % 5]};color:#fff;border-color:transparent">Day ${i + 1}</span><h3 style="margin-top:6px">${esc(fmtDay(d, { weekday: 'long', month: 'short', day: 'numeric' }))}</h3><div class="muted" style="font-size:13px">${stops.length} stops · ${esc(stops.filter((s) => s.category !== 'food').map((s) => s.place ?? s.title).slice(0, 2).join(', '))}</div></div></button>` }).join('')}</div>
@@ -448,7 +449,7 @@ function itineraryHtml() {
       <div class="body">
         <div class="head"><span class="tag time">${esc(s.start ?? '')}–${esc(s.end ?? '')}</span>${s.category ? `<span class="tag ${esc(s.category)}">${ICON[s.category] ?? ''} ${esc(s.category)}</span>` : ''}${s.outdoor ? '<span class="tag outdoor">outdoor</span>' : ''}${flagged.has(s.id) ? '<span class="tag flag">check</span>' : ''}<span class="cost">${s.costPerPerson ? local(s.costPerPerson) : '<span class="muted">free</span>'}</span></div>
         <h4>${esc(s.title)}</h4>
-        <div class="where">${esc(s.place ?? '')}${s.address ? ` · ${esc(s.address)}` : ''}</div>
+        <div class="addr">${esc(s.place ?? '')}${s.address ? ` · ${esc(s.address)}` : ''}</div>
         ${s.note ? `<p class="note">${esc(s.note)}</p>` : ''}
         ${s.tip ? `<div class="tip">💡 ${esc(s.tip)}</div>` : ''}
       </div></div>`
@@ -456,7 +457,7 @@ function itineraryHtml() {
   return `
     <div class="daypills">${days.map(([dd, st], i) => `<button class="daypill ${dd === d ? 'on' : ''}" data-day="${dd}"><span class="dot" style="background:${DAY_COLORS[i % 5]}"></span><span><b>Day ${i + 1}</b><small>${esc(fmtDay(dd))} · ${st.length} stops</small></span></button>`).join('')}</div>
     <div class="dayhead"><div><span class="muted" style="font-weight:700">Day ${idx + 1}</span><h2>${esc(fmtDay(d, { weekday: 'long', month: 'long', day: 'numeric' }))}</h2></div>
-      <div class="wxl">${w ? `${w.rain ? '🌧️' : '☀️'} ${esc(w.desc)}, ${w.min}–${w.max}°C${w.sunset ? ` · 🌅 sunset ${w.sunset}` : ''}<br>` : ''}<b>${local(cost)}</b> planned per person</div></div>
+      <div class="wxl">${w ? `${wxIcon(w)} ${esc(w.desc)}, ${w.min}–${w.max}°C${w.sunset ? ` · 🌅 sunset ${w.sunset}` : ''}<br>` : ''}<b>${local(cost)}</b> planned per person</div></div>
     <div class="timeline">${html}</div>
     <div class="row" style="justify-content:space-between;margin-top:18px">${idx > 0 ? `<button class="btn" data-day="${days[idx - 1][0]}">← Day ${idx}</button>` : '<span></span>'}${idx < days.length - 1 ? `<button class="btn dark" data-day="${days[idx + 1][0]}">Day ${idx + 2} →</button>` : ''}</div>`
 }
