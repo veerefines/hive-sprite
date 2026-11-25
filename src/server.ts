@@ -163,10 +163,15 @@ export async function enrich(trip: Trip, route: Router = routeBetween, f: typeof
 
 // ---------- guardrails ----------
 
-export function clientIp(req: IncomingMessage): string {
-  const h = req.headers
-  const fwd = String(h['fly-client-ip'] ?? h['x-forwarded-for'] ?? '').split(',')[0].trim()
-  return (fwd || req.socket.remoteAddress || 'unknown').slice(0, 64)
+/**
+ * The visitor's IP. Fly's Sprite proxy appends the client address and then
+ * two hops of its own to X-Forwarded-For, so we count from the right:
+ * anything further left was sent by the client and can't be trusted.
+ */
+export function clientIp(req: IncomingMessage, hops = Number(process.env.HIVE_PROXY_HOPS ?? 2)): string {
+  const chain = String(req.headers['x-forwarded-for'] ?? '').split(',').map((x) => x.trim()).filter(Boolean)
+  const ip = chain.length > hops ? chain[chain.length - 1 - hops] : chain.length ? chain[0] : req.socket.remoteAddress
+  return (ip || 'unknown').slice(0, 64)
 }
 
 /** Per-visitor request cap on the API: a token bucket, 90 requests a minute. */
@@ -255,7 +260,7 @@ export function makeServer(
       if (req.method === 'GET' && p === '/api/trips') return json(res, 200, await listTrips())
       if (req.method === 'GET' && p === '/api/whoami') {
         const h = req.headers
-        return json(res, 200, { ip, xff: h['x-forwarded-for'] ?? null, flyClientIp: h['fly-client-ip'] ?? null, realIp: h['x-real-ip'] ?? null, socket: req.socket.remoteAddress })
+        return json(res, 200, { ip, hops: String(h['x-forwarded-for'] ?? '').split(',').length })
       }
       if (req.method === 'GET' && p === '/api/cover') {
         const q = String(url.searchParams.get('q') ?? '').trim().slice(0, 80)

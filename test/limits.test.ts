@@ -103,3 +103,11 @@ test('place search falls back to Nominatim when Photon is unreachable, then skip
   await findPlaces(35.0, 135.77, 'museum', 3000, f)
   assert.ok(!hosts.includes('photon.komoot.io'), 'breaker open: Photon skipped')
 })
+
+test('client IP counts from the right of X-Forwarded-For, so spoofed entries are ignored', async () => {
+  const { clientIp } = await import('../src/server.ts')
+  const req = (xff?: string) => ({ headers: xff ? { 'x-forwarded-for': xff } : {}, socket: { remoteAddress: '::1' } }) as never
+  assert.equal(clientIp(req('64.136.145.1, 169.155.48.226, 172.16.40.2')), '64.136.145.1')
+  assert.equal(clientIp(req('6.6.6.6, 64.136.145.1, 169.155.48.226, 172.16.40.2')), '64.136.145.1', 'client-sent prefix ignored')
+  assert.equal(clientIp(req()), '::1')
+})
