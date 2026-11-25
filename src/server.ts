@@ -7,7 +7,7 @@ import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { gatewayLlm, modelChain, slackPost, type Llm } from './connectors.ts'
-import { configFromEnv, Limiter, politeFetch, QuotaError } from './limits.ts'
+import { configFromEnv, Limiter, politeFetch, QuotaError, useHttpCache } from './limits.ts'
 import { photoForDestination } from './photos.ts'
 import { checkTrip, formatForSlack, reviseTrip, runHive, type Profile } from './agent.ts'
 import { computeBudget, computeIdeas, computeLegs, computeMoney, computePacking, computePhotos, toIcs, type Router } from './enrich.ts'
@@ -253,6 +253,10 @@ export function makeServer(
         }
       }
       if (req.method === 'GET' && p === '/api/trips') return json(res, 200, await listTrips())
+      if (req.method === 'GET' && p === '/api/whoami') {
+        const h = req.headers
+        return json(res, 200, { ip, xff: h['x-forwarded-for'] ?? null, flyClientIp: h['fly-client-ip'] ?? null, realIp: h['x-real-ip'] ?? null, socket: req.socket.remoteAddress })
+      }
       if (req.method === 'GET' && p === '/api/cover') {
         const q = String(url.searchParams.get('q') ?? '').trim().slice(0, 80)
         if (!q) return json(res, 400, { error: 'q required' })
@@ -405,5 +409,6 @@ export function makeServer(
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  useHttpCache(join(DATA, 'http-cache.json'))
   makeServer().listen(PORT, () => console.log(`Hive listening on :${PORT}`))
 }

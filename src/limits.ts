@@ -177,8 +177,42 @@ const GAP_MS: Record<string, number> = {
 }
 const nextAt = new Map<string, number>()
 const cache = new Map<string, { at: number; status: number; body: string; type: string }>()
-const CACHE_MS = 6 * 3600_000
-const CACHE_MAX = 800
+const CACHE_MAX = 1500
+/** Places and photos barely change: keep them a week. Weather and FX: 6 hours. */
+const LONG_TTL_HOSTS = new Set(['photon.komoot.io', 'nominatim.openstreetmap.org', 'en.wikipedia.org', 'overpass-api.de'])
+const ttl = (url: string) => {
+  try {
+    return LONG_TTL_HOSTS.has(new URL(url).host) ? 7 * 86400_000 : 6 * 3600_000
+  } catch {
+    return 6 * 3600_000
+  }
+}
+let cacheFile: string | undefined
+let saveTimer: ReturnType<typeof setTimeout> | undefined
+function persistSoon() {
+  if (!cacheFile || saveTimer) return
+  saveTimer = setTimeout(() => {
+    saveTimer = undefined
+    try {
+      mkdirSync(dirname(cacheFile!), { recursive: true })
+      const keep = [...cache.entries()].filter(([u, v]) => LONG_TTL_HOSTS.has(new URL(u).host) && Date.now() - v.at < ttl(u)).slice(-CACHE_MAX)
+      writeFileSync(`${cacheFile}.tmp`, JSON.stringify(keep))
+      renameSync(`${cacheFile}.tmp`, cacheFile!)
+    } catch {
+      /* best effort */
+    }
+  }, 3000)
+  saveTimer.unref?.()
+}
+/** Load the on-disk cache (places, photos) once at startup. */
+export function useHttpCache(file: string) {
+  cacheFile = file
+  try {
+    for (const [k, v] of JSON.parse(readFileSync(file, 'utf8')) as Array<[string, { at: number; status: number; body: string; type: string }]>) cache.set(k, v)
+  } catch {
+    /* first run */
+  }
+}
 let inflight = 0
 const waiters: Array<() => void> = []
 const MAX_INFLIGHT = 8
@@ -210,7 +244,7 @@ export function politeFetch(base: typeof fetch = fetch): typeof fetch {
     })()
     const key = method === 'GET' ? url : ''
     const hit = key ? cache.get(key) : undefined
-    if (hit && Date.now() - hit.at < CACHE_MS) return new Response(hit.body, { status: hit.status, headers: { 'content-type': hit.type } })
+    if (hit && Date.now() - hit.at < ttl(key)) return new Response(hit.body, { status: hit.status, headers: { 'content-type': hit.type } })
     await slot(host)
     try {
       const res = await base(input as string, { ...init, signal: init?.signal ?? AbortSignal.timeout(12_000) })
@@ -219,6 +253,7 @@ export function politeFetch(base: typeof fetch = fetch): typeof fetch {
         if (cache.size >= CACHE_MAX) cache.delete(cache.keys().next().value as string)
         const type = res.headers.get('content-type') ?? 'application/json'
         cache.set(key, { at: Date.now(), status: res.status, body, type })
+        persistSoon()
         return new Response(body, { status: res.status, headers: { 'content-type': type } })
       }
       return res

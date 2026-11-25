@@ -43,7 +43,7 @@ const STOP_SCHEMA = {
     date: { type: 'string', description: 'YYYY-MM-DD' },
     start: { type: 'string', description: 'HH:MM' },
     end: { type: 'string', description: 'HH:MM' },
-    place: { type: 'string', description: 'EXACT name of a place returned by find_places or geocode' },
+    place: { type: 'string', description: 'The place ID from the shortlist or find_places, e.g. "P12"' },
     title: { type: 'string', description: 'Short label, e.g. "Seafood lunch at Cervejaria Ramiro"' },
     category: { type: 'string', enum: ['food', 'sight', 'activity', 'nightlife', 'shopping'] },
     costPerPerson: { type: 'number', description: 'Estimated USD per person' },
@@ -62,7 +62,7 @@ const PLAN_PARAMS = {
     stay: {
       type: 'object',
       properties: {
-        place: { type: 'string', description: 'EXACT name of a hotel or hostel from find_places' },
+        place: { type: 'string', description: 'The ID of a hotel or hostel from the shortlist, e.g. "P3"' },
         nightlyUsd: { type: 'number', description: 'Estimated USD per room per night' },
         why: { type: 'string' },
       },
@@ -152,7 +152,7 @@ function profileLines(p?: Profile): string {
 }
 
 const RULES = [
-  'Every stop and the stay must use the EXACT "place" name of something find_places or geocode returned. Never invent places.',
+  'Every stop and the stay must set "place" to the ID of a real place (e.g. "P12") from the shortlist or find_places. Never invent places.',
   'Each day: breakfast, lunch and dinner at real restaurants/cafes/bakeries, plus sights or activities that fit the interests. No place twice in the trip.',
   'Meal times: breakfast 07:30-10:00, lunch 12:00-14:30, dinner starts 18:30-21:00 (later where locals eat late, e.g. Spain).',
   'Keep stops in the same area per day, leave 15-30 min between stops for travel, respect the pace (chill 3-4 timed stops, balanced 5-6, packed 7-8 including meals).',
@@ -187,7 +187,7 @@ function planAsText(t: Trip): string {
   if (t.stay) lines.push(`Stay: ${t.stay.name}${t.stay.nightlyUsd ? ` (~$${t.stay.nightlyUsd}/night)` : ''}`)
   for (const [date, stops] of [...groupByDate(t.stops).entries()].sort()) {
     lines.push(`${date}:`)
-    for (const s of sortDay(stops)) lines.push(`  ${s.start}-${s.end} ${s.title} [place: ${s.place ?? s.title}; ${s.category}; $${s.costPerPerson ?? 0}${s.outdoor ? '; outdoor' : ''}]`)
+    for (const s of sortDay(stops)) lines.push(`  ${s.start}-${s.end} ${s.title} [place: ${t.known[s.place ?? '']?.id ?? s.place ?? s.title}; ${s.category}; $${s.costPerPerson ?? 0}${s.outdoor ? '; outdoor' : ''}]`)
   }
   return lines.join('\n')
 }
@@ -203,6 +203,7 @@ function revisePrompt(t: Trip, profile?: Profile): string {
     `Centre: ${t.center?.lat}, ${t.center?.lng}.`,
     `Forecast:\n${forecastLines(r, t.forecast) || 'n/a'}`,
     `Current plan:\n${planAsText(t)}`,
+    `Other places Hive knows nearby (by ID):\n${shortlist(t.known)}`,
     'If they only ask a question, answer briefly (2-4 sentences) without tools.',
     'If they want a change, research with find_places, then call propose_plan with the WHOLE revised trip and a one-line "summary" of what changed. Keep everything they did not ask to change.',
     'If they tell you a lasting fact about themselves (diet, home city, interests), also call remember.',
@@ -221,9 +222,14 @@ function norm(s: string): string {
 
 export function resolvePlace(name: string | undefined, known: Record<string, Place>): Place | null {
   if (!name) return null
+  const all = Object.values(known)
+  const id = /^\s*(P\d{1,4})\b/i.exec(name)?.[1]?.toUpperCase()
+  if (id) {
+    const byId = all.find((p) => p.id === id)
+    if (byId) return byId
+  }
   const n = norm(name)
   if (!n) return null
-  const all = Object.values(known)
   return all.find((p) => norm(p.name) === n) ?? all.find((p) => norm(p.name).length > 3 && (n.includes(norm(p.name)) || norm(p.name).includes(n))) ?? null
 }
 
@@ -250,7 +256,7 @@ function issue(date: string, severity: Issue['severity'], message: string, stopI
 export function requestChecks(req: TripRequest, stops: Stop[], weather: Record<string, DayWeather>, unresolved: Stop[] = []): Issue[] {
   const issues: Issue[] = []
   for (const s of unresolved) {
-    issues.push(issue(s.date, 'error', `"${s.place ?? s.title}" is not a place Hive found. Use an exact name from find_places.`, [s.id]))
+    issues.push(issue(s.date, 'error', `"${s.place ?? s.title}" is not on the shortlist. Set "place" to a shortlist ID like "P7".`, [s.id]))
   }
   const seen = new Map<string, string>()
   for (const s of stops) {
@@ -347,6 +353,29 @@ function evaluate(raw: Record<string, unknown>, req: TripRequest, weather: Recor
   }
 }
 
+// ---------- place ids ----------
+
+/** Add a place to the known set, giving it a stable short id the model can use. */
+export function remember(known: Record<string, Place>, p: Place): Place {
+  const existing = known[p.name]
+  if (existing) return existing
+  p.id = `P${Object.keys(known).length + 1}`
+  known[p.name] = p
+  return p
+}
+
+/** Give ids to places saved before ids existed. */
+export function ensureIds(known: Record<string, Place>) {
+  const used = new Set(Object.values(known).map((p) => p.id).filter(Boolean))
+  let n = 1
+  for (const p of Object.values(known)) {
+    if (p.id) continue
+    while (used.has(`P${n}`)) n++
+    p.id = `P${n}`
+    used.add(p.id)
+  }
+}
+
 // ---------- research (in code, not by the model) ----------
 
 const INTEREST_SEARCH: Record<string, Array<[string, string?]>> = {
@@ -380,7 +409,7 @@ async function research(req: TripRequest, center: { lat: number; lng: number }, 
   const searches = researchPlan(req)
   const found = await Promise.all(searches.map(([kind, kw]) => findPlaces(center.lat, center.lng, kind, 3000, f, kw ?? '').catch(() => [] as Place[])))
   searches.forEach(([kind, kw], i) => {
-    for (const p of found[i]) known[p.name] = p
+    for (const p of found[i]) remember(known, p)
     note(0, 'find_places', `${kind}${kw ? ` "${kw}"` : ''}: ${found[i].length} found`)
   })
 }
@@ -389,7 +418,7 @@ function shortlist(known: Record<string, Place>): string {
   const byKind: Record<string, Place[]> = {}
   for (const p of Object.values(known)) (byKind[p.kind] ??= []).length < 12 && byKind[p.kind].push(p)
   return Object.entries(byKind)
-    .map(([k, list]) => `${k}:\n${list.map((p) => `- ${p.name} (${p.lat.toFixed(4)}, ${p.lng.toFixed(4)})`).join('\n')}`)
+    .map(([k, list]) => `${k}:\n${list.map((p) => `- ${p.id} · ${p.name} (${p.lat.toFixed(4)}, ${p.lng.toFixed(4)})`).join('\n')}`)
     .join('\n')
 }
 
@@ -450,7 +479,7 @@ async function loop(
         switch (call.function.name) {
           case 'geocode': {
             const p = await geocode(String(args.query ?? ''), f)
-            if (p) ctx.known[p.name] = p
+            if (p) remember(ctx.known, p)
             note(step, 'geocode', String(args.query))
             result = p ?? 'Not found.'
             break
@@ -462,9 +491,9 @@ async function loop(
               break
             }
             const found = await findPlaces(Number(args.lat), Number(args.lng), String(args.kind), Number(args.radius_m) || 2500, f, String(args.keyword ?? ''))
-            for (const p of found) ctx.known[p.name] = p
+            for (const p of found) remember(ctx.known, p)
             note(step, 'find_places', `${args.kind}${args.keyword ? ` "${args.keyword}"` : ''}: ${found.length} found`)
-            result = found.length ? found.map((p) => ({ name: p.name, lat: p.lat, lng: p.lng, address: p.address })) : 'No places found. Try another kind, keyword or a wider radius. Do not invent places.'
+            result = found.length ? found.map((p) => ({ id: ctx.known[p.name]?.id, name: p.name, lat: p.lat, lng: p.lng, address: p.address })) : 'No places found. Try another kind, keyword or a wider radius. Do not invent places.'
             break
           }
           case 'propose_plan': {
@@ -523,7 +552,7 @@ export async function runHive(req: TripRequest, deps: AgentDeps): Promise<Trip> 
     { role: 'system', content: planPrompt(req, weather, deps.profile) },
     {
       role: 'user',
-      content: `${req.prompt}${center ? `\n(Destination centre: ${center.lat}, ${center.lng})` : ''}\n\nHive already searched OpenStreetMap. Shortlist of real places (use exact names):\n${shortlist(known)}\n\nUse find_places only for something specific that is missing (at most 3 searches), then call propose_plan.`,
+      content: `${req.prompt}${center ? `\n(Destination centre: ${center.lat}, ${center.lng})` : ''}\n\nHive already searched OpenStreetMap. Shortlist of real places (refer to them by ID, e.g. "place": "P4"):\n${shortlist(known)}\n\nUse find_places only for something specific that is missing (at most 3 searches), then call propose_plan.`,
     },
   ]
   const { text, draft } = await loop(messages, TOOLS, { req, weather, known, mustPlan: true }, deps, note)
@@ -574,6 +603,7 @@ function diffPlans(before: Stop[], after: Stop[]): Proposal['diff'] {
 /** Chat about a trip. May return a proposal (never applied here). */
 export async function reviseTrip(trip: Trip, message: string, deps: AgentDeps): Promise<{ reply: string; proposal?: Proposal }> {
   const note = noteFn(deps, [])
+  ensureIds(trip.known)
   const known = { ...trip.known }
   const history: ChatMessage[] = trip.chat.slice(-8).map((m) => ({ role: m.role === 'user' ? 'user' : 'assistant', content: m.text }))
   const messages: ChatMessage[] = [{ role: 'system', content: revisePrompt(trip, deps.profile) }, ...history, { role: 'user', content: message }]

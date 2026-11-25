@@ -6,6 +6,8 @@
 const UA = 'hive-sprite/0.1 (Fly.io Hacksgiving entry; github.com/veerefines/hive-sprite)'
 
 export interface Place {
+  /** Short shortlist id (P1, P2, …) the model uses to refer to the place. */
+  id?: string
   name: string
   lat: number
   lng: number
@@ -69,8 +71,13 @@ async function photon(lat: number, lng: number, kind: string, keyword: string, r
   const url = keyword
     ? `https://photon.komoot.io/api/?lang=en&lat=${lat}&lon=${lng}&limit=25&osm_tag=${tag}&q=${encodeURIComponent(keyword)}`
     : `https://photon.komoot.io/reverse?lang=en&lat=${lat}&lon=${lng}&limit=20&osm_tag=${tag}&radius=${Math.max(1, Math.round(radiusKm))}`
-  const res = await withTimeout((signal) => f(url, { headers: { "user-agent": UA }, signal }), 20000)
-  if (!res?.ok) return []
+  let res: Response
+  try {
+    res = await f(url, { headers: { 'user-agent': UA }, signal: AbortSignal.timeout(20000) })
+  } catch (err) {
+    throw new Error(`photon unreachable: ${(err as Error).message}`)
+  }
+  if (!res.ok) return []
   const data = (await res.json()) as {
     features: Array<{ geometry: { coordinates: [number, number] }; properties: Record<string, string> }>
   }
@@ -114,6 +121,42 @@ async function overpass(lat: number, lng: number, kind: string, radiusM: number,
     .filter((p) => p.name && Number.isFinite(p.lat))
 }
 
+/** Photon circuit breaker: after a connection failure, skip it for a while. */
+let photonDownUntil = 0
+export function photonAvailable(now = Date.now()) {
+  return now >= photonDownUntil
+}
+function markPhotonDown(now = Date.now()) {
+  photonDownUntil = now + 10 * 60_000
+}
+
+const NOMINATIM_WORD: Record<string, string> = {
+  restaurant: 'restaurant', cafe: 'cafe', museum: 'museum', attraction: 'attraction', viewpoint: 'viewpoint', park: 'park',
+  bar: 'bar', market: 'marketplace', gallery: 'gallery', bakery: 'bakery', hotel: 'hotel', hostel: 'hostel',
+}
+
+/** Nominatim (OpenStreetMap's own search) inside a box around the point. 1 req/s, so a fallback. */
+async function nominatim(lat: number, lng: number, kind: string, keyword: string, radiusKm: number, f: typeof fetch): Promise<Place[]> {
+  const d = radiusKm / 111
+  const dl = d / Math.max(0.2, Math.cos((lat * Math.PI) / 180))
+  const q = [keyword, NOMINATIM_WORD[kind] ?? kind].filter(Boolean).join(' ')
+  const url =
+    `https://nominatim.openstreetmap.org/search?format=jsonv2&accept-language=en&limit=20&bounded=1` +
+    `&viewbox=${(lng - dl).toFixed(4)},${(lat + d).toFixed(4)},${(lng + dl).toFixed(4)},${(lat - d).toFixed(4)}&q=${encodeURIComponent(q)}`
+  const res = await withTimeout((signal) => f(url, { headers: { 'user-agent': UA }, signal }), 25000)
+  if (!res?.ok) return []
+  const rows = (await res.json()) as Array<{ name?: string; display_name: string; lat: string; lon: string; type?: string; category?: string }>
+  return rows
+    .map((r) => ({
+      name: r.name || r.display_name.split(',')[0],
+      lat: Number(r.lat),
+      lng: Number(r.lon),
+      kind,
+      address: r.display_name.split(',').slice(1, 3).join(',').trim() || undefined,
+    }))
+    .filter((p) => p.name && Number.isFinite(p.lat))
+}
+
 export async function findPlaces(
   lat: number,
   lng: number,
@@ -123,8 +166,18 @@ export async function findPlaces(
   keyword = '',
 ): Promise<Place[]> {
   const r = Math.min(Math.max(radiusM, 500), 8000)
-  let places = await photon(lat, lng, kind, keyword, (r / 1000) * 1.5, fetchImpl).catch(() => [])
-  if (!places.length && keyword) places = await photon(lat, lng, kind, '', (r / 1000) * 1.5, fetchImpl).catch(() => [])  // nearby, no keyword
+  const km = (r / 1000) * 1.5
+  let places: Place[] = []
+  if (photonAvailable()) {
+    try {
+      places = await photon(lat, lng, kind, keyword, km, fetchImpl)
+      if (!places.length && keyword) places = await photon(lat, lng, kind, '', km, fetchImpl) // nearby, no keyword
+    } catch {
+      markPhotonDown()
+    }
+  }
+  if (!places.length) places = await nominatim(lat, lng, kind, keyword, km, fetchImpl).catch(() => [])
+  if (!places.length && keyword) places = await nominatim(lat, lng, kind, '', km, fetchImpl).catch(() => [])
   if (!places.length) places = await overpass(lat, lng, kind, r, fetchImpl).catch(() => [])
   const seen = new Set<string>()
   return places.filter((p) => !seen.has(p.name) && seen.add(p.name)).slice(0, 12)

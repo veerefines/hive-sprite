@@ -32,7 +32,7 @@ async function plannedTrip() {
 test('plan: Hive researches, the checks reject invented places and missing meals, then it fixes them', async () => {
   const { trip, seen } = await plannedTrip()
   const firstReport = JSON.stringify(seen[2])
-  assert.match(firstReport, /Imaginary Bistro.*is not a place Hive found/)
+  assert.match(firstReport, /Imaginary Bistro.*is not on the shortlist/)
   assert.match(firstReport, /Only 2 meal stop/)
   assert.equal(trip.issues.filter((i) => i.severity === 'error').length, 0)
   assert.equal(trip.title, 'Lisbon Bites & Views')
@@ -178,4 +178,18 @@ test('a translated name with the shortlist coordinates still grounds to the real
   const { nearestKnown } = await import('../src/agent.ts')
   assert.equal(nearestKnown(35.0038, 135.7752, known)?.name, '祇園 一力')
   assert.equal(nearestKnown(35.02, 135.79, known), null)
+})
+
+test('places are referred to by shortlist id, so foreign-script names never break grounding', async () => {
+  const { remember: add, ensureIds } = await import('../src/agent.ts')
+  const known = {}
+  const a = add(known, { name: 'まるき製パン所', lat: 35.0, lng: 135.75, kind: 'bakery' })
+  const b = add(known, { name: 'Kiyomizu-dera', lat: 34.9949, lng: 135.785, kind: 'attraction' })
+  assert.equal(add(known, { name: 'まるき製パン所', lat: 0, lng: 0, kind: 'bakery' }).id, a.id, 'same place keeps its id')
+  assert.equal(resolvePlace('P1', known)?.name, 'まるき製パン所')
+  assert.equal(resolvePlace('p2 (Kiyomizu)', known)?.name, 'Kiyomizu-dera')
+  assert.equal(b.id, 'P2')
+  const old: Record<string, { name: string; lat: number; lng: number; kind: string; id?: string }> = { x: { name: 'x', lat: 1, lng: 1, kind: 'cafe' }, y: { name: 'y', lat: 1, lng: 1, kind: 'cafe', id: 'P1' } }
+  ensureIds(old)
+  assert.deepEqual([old.x.id, old.y.id], ['P2', 'P1'])
 })

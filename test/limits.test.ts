@@ -85,3 +85,21 @@ test('API request bucket refills over time', async () => {
   assert.equal(ok, 90)
   assert.equal(allowRequest('bucket-ip', t0 + 2_000, 90), true, '2s later: 3 tokens back')
 })
+
+test('place search falls back to Nominatim when Photon is unreachable, then skips Photon', async () => {
+  const { findPlaces, photonAvailable } = await import('../src/world.ts')
+  const hosts: string[] = []
+  const f = (async (u: string) => {
+    const url = new URL(String(u))
+    hosts.push(url.host)
+    if (url.host === 'photon.komoot.io') throw new TypeError('fetch failed')
+    if (url.host === 'nominatim.openstreetmap.org') return new Response(JSON.stringify([{ name: 'Kyoto National Museum', display_name: 'Kyoto National Museum, Higashiyama, Kyoto', lat: '34.99', lon: '135.773' }]))
+    return new Response('[]', { status: 500 })
+  }) as typeof fetch
+  const got = await findPlaces(35.0, 135.77, 'museum', 3000, f)
+  assert.deepEqual(got.map((p) => p.name), ['Kyoto National Museum'])
+  assert.equal(photonAvailable(), false)
+  hosts.length = 0
+  await findPlaces(35.0, 135.77, 'museum', 3000, f)
+  assert.ok(!hosts.includes('photon.komoot.io'), 'breaker open: Photon skipped')
+})
