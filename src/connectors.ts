@@ -66,13 +66,21 @@ export function modelChain(env = process.env): string[] {
  * first, so the caller can count it against the day's allowance.
  */
 export function gatewayLlm(
-  base = process.env.HIVE_LLM_GATEWAY ?? '',
+  base: string | undefined = process.env.HIVE_LLM_GATEWAY,
   models: string | string[] = modelChain(),
   fetchImpl: typeof fetch = fetch,
   maxTokens = Number(process.env.HIVE_MAX_TOKENS ?? 6000),
   onCall: (model: string) => void = () => {},
+  env = process.env,
 ): Llm {
-  if (!base) throw new Error('HIVE_LLM_GATEWAY is not set: point it at your LLM connector URL')
+  const apiKey = env.OPENROUTER_API_KEY
+  const directOpenRouter = !base && !!apiKey
+  const endpoint = base ?? (directOpenRouter ? 'https://openrouter.ai/api/v1' : '')
+  if (!endpoint) throw new Error('Configure OPENROUTER_API_KEY or HIVE_LLM_GATEWAY to enable the LLM connector')
+  const headers = {
+    'content-type': 'application/json',
+    ...(directOpenRouter && apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+  }
   const chain = Array.isArray(models) ? models : [models]
   if (!chain.length) throw new Error('No allowed models (free tier only: set HIVE_MODELS to ids ending in :free)')
   let preferred = 0
@@ -84,10 +92,10 @@ export function gatewayLlm(
       onCall(model)
       let res: Response
       try {
-        res = await fetchImpl(`${trimSlash(base)}/chat/completions`, {
+        res = await fetchImpl(`${trimSlash(endpoint)}/chat/completions`, {
         method: 'POST',
-        signal: AbortSignal.timeout(Number(process.env.HIVE_LLM_TIMEOUT_MS ?? 150_000)),
-        headers: { 'content-type': 'application/json' },
+        signal: AbortSignal.timeout(Number(env.HIVE_LLM_TIMEOUT_MS ?? 150_000)),
+        headers,
         body: JSON.stringify({ model, messages, ...(tools.length ? { tools, tool_choice: 'auto' } : {}), temperature: 0.3, max_tokens: maxTokens }),
         })
       } catch (err) {
@@ -104,7 +112,8 @@ export function gatewayLlm(
         lastErr = data.error?.message ?? 'no message'
         continue
       }
-      lastErr = `${res.status}: ${(await res.text()).slice(0, 200)}`
+      const upstreamError = (await res.text()).slice(0, 200)
+      lastErr = `${res.status}: ${apiKey ? upstreamError.replaceAll(apiKey, '[redacted]') : upstreamError}`
       if (res.status !== 429 && res.status < 500) break
     }
     throw new Error(`LLM connector failed (${lastErr})`)

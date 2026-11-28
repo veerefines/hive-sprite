@@ -23,15 +23,42 @@ const PORT = Number(process.env.PORT ?? 8080)
 const DATE = /^\d{4}-\d{2}-\d{2}$/
 const INTERESTS = ['food', 'culture', 'history', 'art', 'nature', 'nightlife', 'shopping', 'architecture', 'coffee', 'markets', 'views', 'music']
 
+const MAX_BODY_BYTES = 64_000
+
+class RequestBodyError extends Error {
+  readonly status: number
+
+  constructor(message: string, status: number) {
+    super(message)
+    this.status = status
+  }
+}
+
 async function body(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = []
   let size = 0
+  let oversized = false
   for await (const c of req) {
-    size += (c as Buffer).length
-    if (size > 64_000) throw new Error('Request too large')
-    chunks.push(c as Buffer)
+    const chunk = c as Buffer
+    size += chunk.length
+    if (size > MAX_BODY_BYTES) {
+      oversized = true
+      continue
+    }
+    if (!oversized) chunks.push(chunk)
   }
-  return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+  if (oversized) throw new RequestBodyError('Request too large', 413)
+  try {
+    return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
+  } catch {
+    throw new RequestBodyError('Invalid JSON request body', 400)
+  }
+}
+
+function isCalendarDate(value: string): boolean {
+  if (!DATE.test(value)) return false
+  const parsed = new Date(`${value}T00:00:00.000Z`)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value
 }
 
 function json(res: ServerResponse, status: number, data: unknown) {
@@ -45,7 +72,7 @@ export function validate(raw: unknown): TripRequest | string {
   const startDate = String(r.startDate ?? '')
   const endDate = String(r.endDate ?? '')
   if (!destination) return 'destination is required'
-  if (!DATE.test(startDate) || !DATE.test(endDate)) return 'dates must be YYYY-MM-DD'
+  if (!isCalendarDate(startDate) || !isCalendarDate(endDate)) return 'dates must be valid YYYY-MM-DD calendar dates'
   if (endDate < startDate) return 'endDate is before startDate'
   const days = (Date.parse(endDate) - Date.parse(startDate)) / 86_400_000 + 1
   if (days > 5) return 'Hive plans up to 5 days at a time'
@@ -232,7 +259,7 @@ export function makeServer(
       if (req.method === 'GET' && p === '/api/health') {
         return json(res, 200, {
           ok: true,
-          llmConnector: !!process.env.HIVE_LLM_GATEWAY,
+          llmConnector: !!(process.env.HIVE_LLM_GATEWAY || process.env.OPENROUTER_API_KEY),
           slackConnector: !!process.env.HIVE_SLACK_GATEWAY,
           models: modelChain(),
           host: process.env.SPRITE_NAME ?? 'local',
@@ -407,6 +434,9 @@ export function makeServer(
       }
       json(res, 404, { error: 'not found' })
     } catch (err) {
+      if (!res.headersSent && err instanceof RequestBodyError) {
+        return json(res, err.status, { error: err.message })
+      }
       if (!res.headersSent) json(res, 500, { error: (err as Error).message })
       else res.end()
     }

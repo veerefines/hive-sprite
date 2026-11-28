@@ -93,8 +93,26 @@ test('profile: saved on disk, filtered, and remembered facts merge in', async ()
 test('validation and quotas', () => {
   assert.equal(typeof validate({ destination: 'Rome', startDate: '2026-12-01', endDate: '2026-12-09' }), 'string')
   assert.equal(typeof validate({ destination: '', startDate: '2026-12-01', endDate: '2026-12-01' }), 'string')
+  assert.equal(typeof validate({ destination: 'Rome', startDate: '2026-02-30', endDate: '2026-03-01' }), 'string')
+  assert.equal(typeof validate({ destination: 'Rome', startDate: '2026-01-01', endDate: '2026-01-01' }), 'object')
   const ok = validate({ destination: 'Rome', startDate: '2026-12-01', endDate: '2026-12-02', slackChannel: 'bad channel!', travellers: 99 })
   assert.ok(typeof ok === 'object' && ok.slackChannel === undefined && ok.travellers === 12)
+})
+
+test('read endpoints and malformed JSON return appropriate status codes', async () => {
+  assert.equal((await fetch(`${base}/api/health`)).status, 200)
+  assert.equal((await fetch(`${base}/api/profile`)).status, 200)
+  assert.equal((await fetch(`${base}/api/trips`)).status, 200)
+  assert.equal((await fetch(`${base}/api/whoami`)).status, 200)
+  assert.equal((await fetch(`${base}/api/cover`)).status, 400)
+  assert.equal((await fetch(`${base}/api/trips/no-such-trip`)).status, 404)
+
+  const badJson = await fetch(`${base}/api/profile`, { method: 'PUT', body: '{invalid' })
+  assert.equal(badJson.status, 400)
+  assert.deepEqual(await badJson.json(), { error: 'Invalid JSON request body' })
+
+  const oversized = await fetch(`${base}/api/profile`, { method: 'PUT', body: JSON.stringify({ note: 'x'.repeat(64_001) }) })
+  assert.equal(oversized.status, 413)
 })
 
 test('packing list: forecast-aware and toggles persist', async () => {
