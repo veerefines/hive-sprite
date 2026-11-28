@@ -499,7 +499,14 @@ async function loop(
     messages.push({ role: 'assistant', content: reply.content ?? null, tool_calls: reply.tool_calls?.length ? reply.tool_calls : undefined })
     if (!reply.tool_calls?.length) {
       const clean = draft && !draft.issues.some((i) => i.severity === 'error')
-      if (clean || (!ctx.mustPlan && !draft) || nudges >= 2) return { text: (reply.content ?? '').trim(), draft: clean ? draft : (best ?? draft) }
+      if (clean || (!ctx.mustPlan && !draft) || nudges >= 2) {
+        let text = (reply.content ?? '').trim()
+        // Sanitize: if residual tool markup leaked through, discard it
+        if (text && (/<tool_call|<function=|<parameter=|>\s*(propose_plan|find_places|remember|geocode)\s*>/.test(text))) {
+          text = ''
+        }
+        return { text, draft: clean ? draft : (best ?? draft) }
+      }
       nudges++
       messages.push({ role: 'user', content: draft ? 'The plan still has errors. Fix them and call propose_plan again.' : 'Call propose_plan with the whole trip.' })
       continue

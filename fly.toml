@@ -10,6 +10,8 @@ primary_region = 'ams'
 [env]
   PORT = '8080'
   HIVE_DATA_DIR = '/data'
+  HIVE_IP_PLANS_PER_HOUR = '5'
+  HIVE_IP_PLANS_PER_DAY = '5'
 
 [http_service]
   internal_port = 8080

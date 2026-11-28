@@ -41,6 +41,83 @@ function trimSlash(s: string): string {
 }
 
 /**
+ * Extract tool calls from free models that emit them as XML-like text in content
+ * instead of structured tool_calls. Common patterns:
+ *   <tool_call><function=propose_plan><parameter=title>...</parameter>...</function></tool_call>
+ *   > propose_plan> title> Mumbai... </parameter> stay> {...}
+ */
+function extractToolCalls(msg: LlmReply): LlmReply {
+  // If structured tool_calls exist, use them as-is
+  if (msg.tool_calls && msg.tool_calls.length > 0) {
+    return { content: msg.content ?? null, tool_calls: msg.tool_calls }
+  }
+
+  const content = msg.content ?? ''
+  if (typeof content !== 'string') {
+    return { content: msg.content ?? null, tool_calls: undefined }
+  }
+
+  const extracted: ToolCall[] = []
+  let cleanContent = content
+
+  // Pattern 1: <tool_call>...</tool_call> blocks
+  const xmlPattern = /<tool_call>\s*<function=([^>]+)>(.*?)<\/function>\s*<\/tool_call>/gs
+  const xmlMatches = [...content.matchAll(xmlPattern)]
+
+  for (const match of xmlMatches) {
+    const functionName = match[1].trim()
+    const paramsBlock = match[2]
+
+    // Extract <parameter=KEY>VALUE</parameter> pairs
+    const paramPattern = /<parameter=([^>]+)>(.*?)<\/parameter>/gs
+    const params: Record<string, unknown> = {}
+    let paramMatch: RegExpExecArray | null
+
+    while ((paramMatch = paramPattern.exec(paramsBlock)) !== null) {
+      const key = paramMatch[1].trim()
+      const value = paramMatch[2].trim()
+
+      // Try to parse as JSON for nested structures, otherwise keep as string
+      try {
+        params[key] = JSON.parse(value)
+      } catch {
+        params[key] = value
+      }
+    }
+
+    // Create a synthetic tool call
+    extracted.push({
+      id: `call_${Date.now()}_${extracted.length}`,
+      type: 'function',
+      function: {
+        name: functionName,
+        arguments: JSON.stringify(params),
+      },
+    })
+
+    // Remove this tool call block from content
+    cleanContent = cleanContent.replace(match[0], '')
+  }
+
+  // Pattern 2: > function_name> param> value format
+  const arrowPattern = />\s*(propose_plan|find_places|remember|geocode)\s*>[\s\S]*?(?=\n\n|$)/g
+  const arrowMatches = [...content.matchAll(arrowPattern)]
+
+  for (const match of arrowMatches) {
+    // If we find this pattern, just strip it - it's too malformed to parse reliably
+    cleanContent = cleanContent.replace(match[0], '')
+  }
+
+  // Clean up any leftover whitespace
+  cleanContent = cleanContent.trim()
+
+  return {
+    content: cleanContent || null,
+    tool_calls: extracted.length > 0 ? extracted : undefined,
+  }
+}
+
+/**
  * OpenAI-compatible chat completions through the OpenRouter (or any
  * OpenAI-compatible) connector. Base URL example:
  *   https://api.sprites.dev/v1/gateway/openrouter/conn_abc123/v1
@@ -107,7 +184,7 @@ export function gatewayLlm(
         const msg = data.choices?.[0]?.message
         if (msg) {
           preferred = i // stick with a model that answers
-          return { content: msg.content ?? null, tool_calls: msg.tool_calls }
+          return extractToolCalls(msg)
         }
         lastErr = data.error?.message ?? 'no message'
         continue

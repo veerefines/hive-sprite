@@ -27,7 +27,7 @@ Hive is built to run at **$0**: free OpenRouter models through the Sprites conne
 | --- | --- | --- |
 | Free models only | `nemotron-3-ultra:free` → `nemotron-3.5-super-vl:free` → `gemma-4-31b-it:free` → `ling-3.2-flash:free` | Paid model ids are dropped unless `HIVE_ALLOW_PAID=1`. A rate-limited model falls through to the next; each call times out at 150 s. |
 | AI calls per day | 45 | OpenRouter allows ~50 free-model requests/day without purchased credit |
-| Plans per day | 6 total · 2 per visitor · 1 per visitor per hour | |
+| Plans per day | 6 total · 5 per visitor per day · 5 per visitor per hour | The shared global and AI-call limits still apply. |
 | Chat messages per day | 20 total · 10 per visitor · 5 per visitor per hour | |
 | API requests | 90 per visitor per minute | token bucket |
 | Concurrency | 1 plan at a time, 1 chat per trip | |

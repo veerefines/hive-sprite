@@ -163,10 +163,25 @@ async function loadHealth() {
     `<span class="pill ${low ? 'warn' : ''}" title="Free-tier guardrails">${health.plansLeft} plan${health.plansLeft === 1 ? '' : 's'} · ${health.chatsLeft} msgs left</span>`,
   ].join('')
 }
+function planLimitMessage(status = health) {
+  if (!status || status.plansLeft > 0) return ''
+  const reasons = status.planLimitReasons ?? []
+  const messages = []
+  const hourly = reasons.find((x) => x.reason === 'visitor-hourly')
+  const daily = reasons.filter((x) => x.reason !== 'visitor-hourly')
+  if (hourly && daily.length === 0) {
+    const mins = Math.max(1, Math.ceil(hourly.retryAfterSec / 60))
+    messages.push(`Your hourly plan limit is reached; it resets in ${mins} minute${mins === 1 ? '' : 's'}.`)
+  }
+  if (daily.some((x) => x.reason === 'visitor-daily')) messages.push('Your visitor plan limit resets at midnight UTC.')
+  if (daily.some((x) => x.reason === 'global-daily' || x.reason === 'ai-daily')) messages.push('Hive’s free planning allowance resets at midnight UTC.')
+  return messages.length ? messages.join(' ') : 'No free plans left right now. Check back after the free-tier limits reset.'
+}
 function freeNote() {
   if (!health) return ''
   const pct = Math.round((health.aiCallsLeft / 45) * 100)
-  return `<div class="free-note"><div class="meter"><div style="width:${Math.min(100, pct)}%"></div></div><span><b>Free tier</b> · ${health.plansLeft ? `${health.plansLeft} new trip${health.plansLeft === 1 ? '' : 's'} available for you now` : 'no new trips left right now'} · resets ${health.resetsInSec > 3600 ? `in ${Math.round(health.resetsInSec / 3600)}h` : 'within the hour'}</span></div>`
+  const availability = health.plansLeft ? `${health.plansLeft} new trip${health.plansLeft === 1 ? '' : 's'} available for you now` : planLimitMessage()
+  return `<div class="free-note"><div class="meter"><div style="width:${Math.min(100, pct)}%"></div></div><span><b>Free tier</b> · ${availability}${health.plansLeft ? ` · AI allowance resets ${health.resetsInSec > 3600 ? `in ${Math.round(health.resetsInSec / 3600)}h` : 'within the hour'}` : ''}</span></div>`
 }
 
 // ---------- home ----------
@@ -255,6 +270,7 @@ async function renderHome() {
     $('.planner').scrollIntoView({ behavior: 'smooth', block: 'center' })
     if (v) cover(v).then((c) => c?.url && ($('#hero-bg').innerHTML = `<img src="${esc(c.url)}" alt="" referrerpolicy="no-referrer" />`))
     form.destination.focus()
+    toast(v ? 'Destination added below. Choose your dates and preferences, then select “Plan my trip with Hive”.' : 'Add your dates and preferences below, then select “Plan my trip with Hive”.')
   }
   $('#where').onkeydown = (e) => e.key === 'Enter' && (e.preventDefault(), $('#where-go').click())
   $('#pace').onclick = (e) => {
@@ -278,7 +294,7 @@ async function renderHome() {
     body.pace = $('#pace .on')?.dataset.pace ?? 'balanced'
     body.interests = $$('#interests .on').map((c) => c.dataset.i)
     if (daysBetween(body.startDate, body.endDate) > 5) return ($('#plan-err').textContent = 'Hive plans up to 5 days at a time.')
-    if (health && health.plansLeft === 0) return ($('#plan-err').textContent = 'No free plans left for you right now. Browse the trips below, or chat with Hive about one.')
+    if (health && health.plansLeft === 0) return ($('#plan-err').textContent = `${planLimitMessage()} Browse the trips below, or chat with Hive about one.`)
     planTrip(body)
   }
   if (location.hash === '#trips') setTimeout(() => $('#trips').scrollIntoView(), 50)
@@ -409,8 +425,14 @@ function overviewHtml() {
   const doctor = errs.length
     ? `<div class="notice err"><span class="ic">🩺</span><div><b>${errs.length} thing${errs.length > 1 ? 's' : ''} to fix.</b> Ask Hive to sort ${errs.length > 1 ? 'them' : 'it'} out.<ul>${errs.map((i) => `<li>${esc(i.message)}</li>`).join('')}</ul></div></div>`
     : `<div class="notice ok"><span class="ic">🩺</span><div><b>Plan Doctor: no conflicts.</b> ${warns.length ? `${warns.length} heads-up${warns.length > 1 ? 's' : ''}: ${warns.map((i) => esc(i.message)).join(' ')}` : 'Every stop fits, with time to get between them.'}</div></div>`
+  // Sanitize summary: strip any leaked tool-call markup from already-saved trips
+  let summary = (trip.summary || '').replace(/<tool_call|<function=|<parameter=/g, '')
+  // Also strip the alternative format: "> propose_plan> title> ..." or similar
+  if (/>\s*(propose_plan|find_places|remember|geocode)>/.test(summary)) {
+    summary = ''
+  }
   return `
-    <p style="font-size:17px;color:var(--ink2);max-width:860px;margin:0 0 16px">${esc(trip.summary)}</p>
+    <p style="font-size:17px;color:var(--ink2);max-width:860px;margin:0 0 16px">${esc(summary)}</p>
     <div class="grid4">
       <div class="card stat honey"><small>All-in per person</small><b>${b ? local(b.totalUsd) : '—'}</b><span>${b && trip.money?.homeCurrency !== trip.money?.currency ? `≈ ${home(b.totalUsd)} · flights included` : 'flights included'}</span></div>
       <div class="card stat"><small>Per day on the ground</small><b>${b ? local(ground) : '—'}</b><span>${r.dailyBudget ? `${ground <= r.dailyBudget ? '✅' : '⚠️'} budget ${local(r.dailyBudget)}` : 'no budget set'}</span></div>

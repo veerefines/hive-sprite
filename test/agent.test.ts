@@ -168,6 +168,33 @@ test('direct OpenRouter requires a key and never leaks it in errors', async () =
   assert.throws(() => gatewayLlm(undefined, 'm:free', fetch, 100, () => {}, {}), /OPENROUTER_API_KEY/)
 })
 
+test('gatewayLlm extracts tool calls from common free-model XML markup in content', async () => {
+  const markup = `Here is the plan:
+<tool_call>
+<function=propose_plan>
+<parameter=title>XML Trip</parameter>
+<parameter=stops>[{"date":"2026-12-01","start":"10:00","end":"11:00","place":"P1","title":"Museum"}]</parameter>
+</function>
+</tool_call>
+Does it look good?`
+  const f = (async () => new Response(JSON.stringify({ choices: [{ message: { content: markup } }] }))) as unknown as typeof fetch
+  const llm = gatewayLlm('https://gw/v1', 'm:free', f)
+  const reply = await llm([{ role: 'user', content: 'x' }], [])
+  assert.equal(reply.tool_calls?.length, 1)
+  assert.equal(reply.tool_calls![0].function.name, 'propose_plan')
+  assert.match(reply.tool_calls![0].function.arguments, /"title":"XML Trip"/)
+  assert.match(reply.content!, /Here is the plan:\s*Does it look good?/)
+  assert.doesNotMatch(reply.content!, /<tool_call>/)
+})
+
+test('agent loop sanitizes residual markup from summary', async () => {
+  const leaky = `I tried to plan it. <tool_call><function=propose_plan>...`
+  const llm = (async () => ({ content: leaky })) as never
+  const trip = await runHive({ ...req, prompt: 'x' }, { llm, fetch: fakeFetch, researchBudget: 1, maxSteps: 2 })
+  assert.equal(trip.summary, 'Hive could not finish a plan this time.')
+  assert.doesNotMatch(trip.summary, /<tool_call>/)
+})
+
 test('an early dinner is sent back to the model', () => {
   const wx = { [D1]: { min: 10, max: 17, desc: 'clear', rain: false } }
   const early = goodDay1.map((x, i) => ({ id: `e${i}`, ...(x.place === 'Cervejaria Ramiro' ? { ...x, start: '17:00', end: '18:00' } : x) }))

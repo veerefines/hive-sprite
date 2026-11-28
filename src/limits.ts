@@ -30,8 +30,8 @@ export function configFromEnv(env = process.env): LimitConfig {
     llmCallsPerDay: n(env.HIVE_LLM_CALLS_PER_DAY, 45),
     plansPerDay: n(env.HIVE_PLANS_PER_DAY, 6),
     chatsPerDay: n(env.HIVE_CHATS_PER_DAY, 20),
-    ipPlansPerHour: n(env.HIVE_IP_PLANS_PER_HOUR, 1),
-    ipPlansPerDay: n(env.HIVE_IP_PLANS_PER_DAY, 2),
+    ipPlansPerHour: n(env.HIVE_IP_PLANS_PER_HOUR, 5),
+    ipPlansPerDay: n(env.HIVE_IP_PLANS_PER_DAY, 5),
     ipChatsPerHour: n(env.HIVE_IP_CHATS_PER_HOUR, 5),
     ipChatsPerDay: n(env.HIVE_IP_CHATS_PER_DAY, 10),
   }
@@ -89,15 +89,14 @@ export class Limiter {
     }
   }
 
-  private roll(): State {
-    const d = this.now()
-    if (this.state.day !== dayOf(d)) this.state = { day: dayOf(d), llmCalls: 0, plans: 0, chats: 0, ips: {} }
+  private roll(now = this.now()): State {
+    if (this.state.day !== dayOf(now)) this.state = { day: dayOf(now), llmCalls: 0, plans: 0, chats: 0, ips: {} }
     return this.state
   }
 
-  private ip(ip: string): IpUse {
-    const s = this.roll()
-    const h = hourOf(this.now())
+  private ip(ip: string, now = this.now()): IpUse {
+    const s = this.roll(now)
+    const h = hourOf(now)
     const u = (s.ips[ip] ??= { hour: h, planH: 0, chatH: 0, planD: 0, chatD: 0 })
     if (u.hour !== h) Object.assign(u, { hour: h, planH: 0, chatH: 0 })
     return u
@@ -150,14 +149,29 @@ export class Limiter {
   }
 
   status(ip?: string) {
-    const s = this.roll()
+    const now = this.now()
+    const s = this.roll(now)
     const c = this.cfg
-    const u = ip ? this.ip(ip) : undefined
+    const u = ip ? this.ip(ip, now) : undefined
+    const aiCallsLeft = Math.max(0, c.llmCallsPerDay - s.llmCalls)
+    const planRemaining = {
+      'global-daily': c.plansPerDay - s.plans,
+      'visitor-daily': u ? c.ipPlansPerDay - u.planD : Infinity,
+      'visitor-hourly': u ? c.ipPlansPerHour - u.planH : Infinity,
+      'ai-daily': Math.floor(aiCallsLeft / 6),
+    }
+    const plansLeft = Math.max(0, Math.min(...Object.values(planRemaining)))
+    const planLimitReasons = plansLeft === 0
+      ? Object.entries(planRemaining)
+          .filter(([, remaining]) => remaining <= 0)
+          .map(([reason]) => ({ reason, retryAfterSec: secondsUntil(now, reason === 'visitor-hourly' ? 'hour' : 'day') }))
+      : []
     return {
-      aiCallsLeft: Math.max(0, c.llmCallsPerDay - s.llmCalls),
-      plansLeft: Math.max(0, Math.min(c.plansPerDay - s.plans, u ? c.ipPlansPerDay - u.planD : Infinity, u ? c.ipPlansPerHour - u.planH : Infinity, Math.floor((c.llmCallsPerDay - s.llmCalls) / 6))),
-      chatsLeft: Math.max(0, Math.min(c.chatsPerDay - s.chats, u ? c.ipChatsPerDay - u.chatD : Infinity, u ? c.ipChatsPerHour - u.chatH : Infinity, Math.floor((c.llmCallsPerDay - s.llmCalls) / 2))),
-      resetsInSec: secondsUntil(this.now(), 'day'),
+      aiCallsLeft,
+      plansLeft,
+      planLimitReasons,
+      chatsLeft: Math.max(0, Math.min(c.chatsPerDay - s.chats, u ? c.ipChatsPerDay - u.chatD : Infinity, u ? c.ipChatsPerHour - u.chatH : Infinity, Math.floor(aiCallsLeft / 2))),
+      resetsInSec: secondsUntil(now, 'day'),
     }
   }
 }

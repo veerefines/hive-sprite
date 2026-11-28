@@ -17,7 +17,7 @@ export interface Photo {
 }
 
 const UA = 'hive-sprite/0.2 (Fly.io Hacksgiving entry; https://github.com/veerefines/hive-sprite)'
-const LANDMARK = new Set(['attraction', 'viewpoint', 'museum', 'gallery', 'park', 'market'])
+const LANDMARK = new Set(['attraction', 'viewpoint', 'museum', 'gallery', 'park', 'market', 'hotel', 'cafe'])
 
 function norm(s: string): string {
   return s.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim()
@@ -46,7 +46,7 @@ export function pickPhoto(
     const m = nameMatch(place.name, p.title)
     const km = haversineKm(place, p)
     let score = 0
-    if ((m === 1 && km < 1.5) || (m >= 0.6 && km < 0.4)) score = 2 + m
+    if ((m >= 0.8 && km < 1.5) || (m >= 0.6 && km < 0.4)) score = 2 + m
     else if (LANDMARK.has(place.kind ?? '') && km < 0.06 && m >= 0.3) score = 1 + m
     if (score && (!best || score > best.score)) best = { p, score }
   }

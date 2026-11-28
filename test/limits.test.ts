@@ -7,19 +7,69 @@ import { Limiter, QuotaError, configFromEnv } from '../src/limits.ts'
 import { gatewayLlm, modelChain } from '../src/connectors.ts'
 import { nameMatch, pickPhoto } from '../src/photos.ts'
 
-const cfg = { llmCallsPerDay: 10, plansPerDay: 3, chatsPerDay: 5, ipPlansPerHour: 1, ipPlansPerDay: 2, ipChatsPerHour: 2, ipChatsPerDay: 3 }
+const cfg = { llmCallsPerDay: 10, plansPerDay: 6, chatsPerDay: 5, ipPlansPerHour: 5, ipPlansPerDay: 5, ipChatsPerHour: 2, ipChatsPerDay: 3 }
+
+test('status explains which plan limits are exhausted and when they reset', () => {
+  let now = new Date('2030-01-01T10:30:00Z')
+  const l = new Limiter({ ...cfg, ipPlansPerHour: 1, ipPlansPerDay: 2 }, undefined, () => now)
+
+  l.take('plan', 'hourly')
+  assert.deepEqual(l.status('hourly').planLimitReasons, [
+    { reason: 'visitor-hourly', retryAfterSec: 1800 },
+  ])
+
+  now = new Date('2030-01-01T11:00:00Z')
+  assert.deepEqual(l.status('hourly').planLimitReasons, [])
+  l.take('plan', 'hourly')
+  now = new Date('2030-01-01T12:00:00Z')
+  assert.deepEqual(l.status('hourly').planLimitReasons, [
+    { reason: 'visitor-daily', retryAfterSec: 43200 },
+  ])
+
+  const daily = new Limiter({ ...cfg, ipPlansPerHour: 99, ipPlansPerDay: 1 }, undefined, () => now)
+  daily.take('plan', 'daily')
+  assert.deepEqual(daily.status('daily').planLimitReasons, [
+    { reason: 'visitor-daily', retryAfterSec: 43200 },
+  ])
+
+  const global = new Limiter({ ...cfg, plansPerDay: 0 }, undefined, () => now)
+  assert.deepEqual(global.status('daily').planLimitReasons, [
+    { reason: 'global-daily', retryAfterSec: 43200 },
+  ])
+
+  const noAi = new Limiter({ ...cfg, llmCallsPerDay: 5 }, undefined, () => now)
+  assert.deepEqual(noAi.status('daily').planLimitReasons, [
+    { reason: 'ai-daily', retryAfterSec: 43200 },
+  ])
+
+  const tied = new Limiter({ ...cfg, llmCallsPerDay: 11, ipPlansPerHour: 1, ipPlansPerDay: 1 }, undefined, () => now)
+  tied.take('plan', 'tied')
+  for (let i = 0; i < 6; i++) tied.llmCall()
+  assert.deepEqual(tied.status('tied').planLimitReasons, [
+    { reason: 'visitor-daily', retryAfterSec: 43200 },
+    { reason: 'visitor-hourly', retryAfterSec: 3600 },
+    { reason: 'ai-daily', retryAfterSec: 43200 },
+  ])
+
+  let clockReads = 0
+  const snapshot = new Limiter(cfg, undefined, () => {
+    clockReads++
+    return new Date(clockReads === 1 ? '2030-01-01T23:59:59Z' : '2030-01-02T00:00:01Z')
+  })
+  assert.deepEqual(snapshot.status('snapshot').planLimitReasons, [])
+  assert.equal(clockReads, 1, 'status should use one clock snapshot')
+})
 
 test('per-visitor hourly and daily limits, global limits, and the AI allowance', () => {
   let now = new Date('2030-01-01T10:00:00Z')
   const l = new Limiter(cfg, undefined, () => now)
-  l.take('plan', 'a')
-  assert.throws(() => l.take('plan', 'a'), (e: QuotaError) => e instanceof QuotaError && /per hour/.test(e.message) && e.retryAfterSec <= 3600)
-  now = new Date('2030-01-01T11:05:00Z')
-  l.take('plan', 'a')
-  now = new Date('2030-01-01T12:05:00Z')
-  assert.throws(() => l.take('plan', 'a'), /limit per visitor/)
+  for (let i = 0; i < 5; i++) l.take('plan', 'a')
+  assert.equal(l.status('a').plansLeft, 0, 'five plans exhaust hourly and daily per-visitor caps')
+  assert.deepEqual(l.status('a').planLimitReasons.map((x) => x.reason), ['visitor-daily', 'visitor-hourly'])
+  assert.throws(() => l.take('plan', 'a'), (e: QuotaError) => e instanceof QuotaError && /trips today/.test(e.message) && e.retryAfterSec <= 86_400)
+  assert.equal(l.status('b').plansLeft, 1, 'global cap leaves one plan for another visitor')
   l.take('plan', 'b')
-  assert.throws(() => l.take('plan', 'c'), /3 trips a day/)
+  assert.throws(() => l.take('plan', 'c'), /6 trips a day/)
   for (let i = 0; i < 10; i++) l.llmCall()
   assert.throws(() => l.llmCall(), /allowance/)
   assert.throws(() => l.take('chat', 'z'), /allowance/)
@@ -77,6 +127,25 @@ test('photos are only used when they really show the place', () => {
   assert.equal(pickPhoto({ name: 'Taberna da Rua das Flores', lat: 38.7118, lng: -9.13, kind: 'restaurant' }, pages), null, 'no wrong photo for a restaurant')
   const kyoto = [{ title: 'Kyoto Imperial Palace', lat: 35.0254, lng: 135.7621, thumb: 'kip.jpg' }]
   assert.equal(pickPhoto({ name: 'Sento Imperial Palace', lat: 35.0205, lng: 135.7665, kind: 'attraction' }, kyoto), null, 'a neighbouring palace is not this palace')
+})
+
+test('hotels and cafes now qualify for landmark matching tier', () => {
+  const pages = [
+    { title: 'Grand Hotel Europa', lat: 50.0755, lng: 14.4178, thumb: 'hotel.jpg' },
+    { title: 'Café Slavia', lat: 50.0808, lng: 14.4132, thumb: 'cafe.jpg' },
+  ]
+  // Hotel within 60m with good name match gets a photo
+  assert.equal(pickPhoto({ name: 'Hotel Europa', lat: 50.0755, lng: 14.4179, kind: 'hotel' }, pages)?.url, 'hotel.jpg')
+  // Cafe within 60m with good name match gets a photo
+  assert.equal(pickPhoto({ name: 'Slavia Cafe', lat: 50.0808, lng: 14.4133, kind: 'cafe' }, pages)?.url, 'cafe.jpg')
+})
+
+test('near-exact name matches are accepted with relaxed threshold', () => {
+  assert.ok(nameMatch('Grand Hotel', 'The Grand Hotel') >= 0.8)
+  assert.ok(nameMatch('Hotel Europa', 'Grand Hotel Europa') >= 0.8)
+  const pages = [{ title: 'The Grand Hotel Vienna', lat: 48.2082, lng: 16.3738, thumb: 'grand.jpg' }]
+  // 0.8+ match within 1.5km qualifies under tier-1
+  assert.equal(pickPhoto({ name: 'Grand Hotel Vienna', lat: 48.2082, lng: 16.3740, kind: 'hotel' }, pages)?.url, 'grand.jpg')
 })
 
 test('API request bucket refills over time', async () => {

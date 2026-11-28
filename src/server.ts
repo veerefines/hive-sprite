@@ -127,6 +127,11 @@ export function normalizeTrip(t: Partial<Trip> & { id: string; request: TripRequ
   n.proposals ??= []
   n.summary ??= ''
   n.title ??= `${n.request.destination.split(',')[0]} trip`
+
+  // Sanitize leaked tool markup from old trips (2026-11-28 fix)
+  if (n.summary && (/<tool_call|<function=|<parameter=|>\s*(propose_plan|find_places|remember|geocode)\s*>/.test(n.summary))) {
+    n.summary = ''
+  }
   return n
 }
 
