@@ -41,7 +41,7 @@ Visitors are identified by the client address the Fly proxy appends to `X-Forwar
 
 | Sprites feature | What Hive uses it for |
 | --- | --- |
-| **Connectors** | Every model call goes through the **Sprites OpenRouter connector**, on free models only. No API key lives on the Sprite: requests carry no `Authorization` header; the gateway attaches the credential. Slack sharing uses the Slack connector. |
+| **Connectors** | On a Sprite, model calls can use the **Sprites OpenRouter connector**. On a regular Fly Machine, configure `OPENROUTER_API_KEY` as a Fly secret; Hive then calls OpenRouter directly over HTTPS. Requests use free models by default; paid model ids remain blocked unless `HIVE_ALLOW_PAID=1`. Never put API keys in source files or paste them into chat. Slack sharing uses the Slack connector. |
 | **Services** | Hive runs as a `sprite-env` service on `--http-port 8080`: a request to a cold Sprite wakes it, starts Hive and serves the page. Nothing runs (or costs) while idle. |
 | **Persistent disk** | Trips, chat history and your traveller profile are plain JSON in `~/hive/data`, surviving sleep and cold boots. This is what makes it a *personal* agent. |
 | **Checkpoints** | The Sprite was checkpointed before each model/prompt change, so a bad change rolls back in seconds. |
@@ -68,7 +68,7 @@ curl -fsSL https://raw.githubusercontent.com/veerefines/hive-sprite/main/sprite/
 
 In the Fly dashboard: **Sprites → Connectors → Add connector → OpenRouter**, then give the `hive` Sprite access with a name-prefix rule. `sprite url update --auth public` shares the page. A public URL is capped at 40 plans and 150 chats a day (`HIVE_DAILY_LIMIT`, `HIVE_DAILY_CHAT_LIMIT`).
 
-Locally: `npm install && npm test` (26 tests, no network: scripted model, fake places, fake router), then `HIVE_LLM_GATEWAY=… npm start`.
+For a Fly Machine, set the key securely with `fly secrets set OPENROUTER_API_KEY` (Fly prompts for the value; do not add it to `fly.toml`). For local development, export `OPENROUTER_API_KEY` in your shell or use a Sprites connector via `HIVE_LLM_GATEWAY`. Run `npm install && npm test`, then `npm start`.
 
 ## Where the code came from
 

@@ -130,6 +130,20 @@ test('find_places: Photon reverse without keyword, search with keyword, dedupe a
   assert.match(url, /photon\.komoot\.io\/api\/\?.*q=seafood/)
 })
 
+test('direct OpenRouter LLM: uses API key and configured base URL', async () => {
+  let url = ''
+  let init: RequestInit = {}
+  const llm = gatewayLlm(undefined, 'm:free', (async (u: string, i: RequestInit) => {
+    url = u
+    init = i
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'hi' } }] }))
+  }) as unknown as typeof fetch, 1234, () => {}, { OPENROUTER_API_KEY: 'test-secret' })
+  const r = await llm([{ role: 'user', content: 'x' }], [])
+  assert.equal(url, 'https://openrouter.ai/api/v1/chat/completions')
+  assert.equal((init.headers as Record<string, string>).authorization, 'Bearer test-secret')
+  assert.equal(r.content, 'hi')
+})
+
 test('gateway LLM: connector URL, no Authorization header, token cap', async () => {
   let url = ''
   let init: RequestInit = {}
@@ -143,6 +157,15 @@ test('gateway LLM: connector URL, no Authorization header, token cap', async () 
   assert.equal(Object.keys(init.headers as object).some((h) => h.toLowerCase() === 'authorization'), false)
   assert.equal(JSON.parse(String(init.body)).max_tokens, 1234)
   assert.equal(r.content, 'hi')
+})
+
+test('direct OpenRouter requires a key and never leaks it in errors', async () => {
+  const llm = gatewayLlm(undefined, 'm:free', (async () => new Response('upstream failure test-secret', { status: 401 })) as unknown as typeof fetch, 100, () => {}, { OPENROUTER_API_KEY: 'test-secret' })
+  await assert.rejects(llm([{ role: 'user', content: 'x' }], []), (error: Error) => {
+    assert.doesNotMatch(error.message, /test-secret/)
+    return true
+  })
+  assert.throws(() => gatewayLlm(undefined, 'm:free', fetch, 100, () => {}, {}), /OPENROUTER_API_KEY/)
 })
 
 test('an early dinner is sent back to the model', () => {
